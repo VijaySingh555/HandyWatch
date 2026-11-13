@@ -142,10 +142,22 @@ class ControlAccess : AccessibilityService() {
     }
 
     // ---- typing into the focused box
+    /** The text box with focus: Android's input focus, or else the focused editable box in any window. */
     private fun focused(): AccessibilityNodeInfo? {
-        val n = runCatching { findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
-        if (n == null || !n.isEditable) { PhoneService.instance?.toWatch("Tap a text box on the phone first"); return null }
-        return n
+        runCatching { findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()?.let { if (it.isEditable) return it }
+        val roots = ArrayList<AccessibilityNodeInfo>()
+        runCatching { rootInActiveWindow }.getOrNull()?.let { roots += it }
+        runCatching { windows.mapNotNull { it.root } }.getOrNull()?.let { roots += it }
+        for (r in roots) find(r, 0)?.let { return it }
+        PhoneService.instance?.toWatch("Tap a text box on the phone first")
+        return null
+    }
+
+    private fun find(n: AccessibilityNodeInfo, depth: Int): AccessibilityNodeInfo? {
+        if (n.isEditable && n.isFocused) return n
+        if (depth > 40) return null
+        for (i in 0 until n.childCount) { val c = n.getChild(i) ?: continue; find(c, depth + 1)?.let { return it } }
+        return null
     }
 
     private fun currentText(n: AccessibilityNodeInfo): String {
@@ -153,23 +165,43 @@ class ControlAccess : AccessibilityService() {
         return n.text?.toString() ?: ""
     }
 
-    private fun setText(n: AccessibilityNodeInfo, t: String) {
+    private fun setText(n: AccessibilityNodeInfo, t: String): Boolean {
         val b = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, t) }
-        n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
-        val sel = Bundle().apply {
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, t.length)
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, t.length)
+        val ok = n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
+        if (ok) {
+            val sel = Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, t.length)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, t.length)
+            }
+            n.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
         }
-        n.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, sel)
+        return ok
     }
 
-    fun type(text: String) { val n = focused() ?: return; setText(n, currentText(n) + text) }
-    fun backspace() { val n = focused() ?: return; val t = currentText(n); if (t.isNotEmpty()) setText(n, t.dropLast(1)) }
+    /** Some apps refuse "set text": paste instead (through the clipboard). */
+    private fun paste(n: AccessibilityNodeInfo, text: String): Boolean {
+        return try {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("HandyWatch", text))
+            n.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+        } catch (_: Exception) { false }
+    }
+
+    fun type(text: String) {
+        val n = focused() ?: return
+        n.refresh()
+        val ok = setText(n, currentText(n) + text) || paste(n, text)
+        PhoneService.instance?.send("typed", "ok" to ok)
+        if (!ok) PhoneService.instance?.toWatch("This app wouldn't take the text")
+    }
+
+    fun backspace() { val n = focused() ?: return; n.refresh(); val t = currentText(n); if (t.isNotEmpty()) setText(n, t.dropLast(1)) }
 
     fun enter() {
         val n = focused() ?: return
-        if (Build.VERSION.SDK_INT >= 30) n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-        else setText(n, currentText(n) + "\n")
+        n.refresh()
+        val done = Build.VERSION.SDK_INT >= 30 && n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        if (!done) setText(n, currentText(n) + "\n")
     }
 }
 

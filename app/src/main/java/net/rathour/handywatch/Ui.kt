@@ -24,26 +24,73 @@ import android.widget.TextView
  * the real one (the watch's 320 × 480 screen is 1:1).
  */
 object Ui {
-    const val BG = 0xFF1D1D1B.toInt()
-    const val CARD = 0xFF2B2B29.toInt()
-    const val CARD2 = 0xFF363634.toInt()
-    const val TRACK = 0xFF3D3D3A.toInt()
-    const val LINE = 0xFF464643.toInt()
-    const val TEXT = 0xFFEDEDEA.toInt()
-    const val TEXT2 = 0xFFA8A8A3.toInt()
-    const val GREY = 0xFF8A8A86.toInt()
+    // status-dial colours (fixed, as in HandyDials)
     const val BLUE = 0xFF1E88E5.toInt()
     const val GREEN = 0xFF43A047.toInt()
     const val RED = 0xFFE53935.toInt()
     const val AMBER = 0xFFF9A825.toInt()
+    // theme colours: OLED black (default) or Grey (HandyDash's light grey pages)
+    var grey = false; private set
+    var BG = 0; private set
+    var CARD = 0; private set
+    var CARD2 = 0; private set
+    var TRACK = 0; private set
+    var LINE = 0; private set
+    var BTN_LINE = 0; private set
+    var TEXT = 0; private set
+    var TEXT2 = 0; private set
+    var GREY = 0; private set
+    var SEL = 0; private set
+    var WARN = 0; private set
+    var RIPPLE = 0; private set
+    var PRIMARY = 0; private set
+    var ON_PRIMARY = 0; private set
+
+    fun applyTheme(ctx: Context) {
+        grey = Prefs.theme(ctx) == "grey"
+        if (grey) {
+            BG = 0xFFD5D5D3.toInt(); CARD = 0xFFE4E4E2.toInt(); CARD2 = 0xFFF1F1EF.toInt(); TRACK = 0xFFBDBDBA.toInt()
+            LINE = 0xFFBDBDBA.toInt(); BTN_LINE = 0xFFC2C2BF.toInt(); TEXT = 0xFF262625.toInt(); TEXT2 = 0xFF6E6E6B.toInt()
+            GREY = 0xFF8A8A86.toInt(); SEL = 0xFFFFFFFF.toInt(); WARN = 0xFFF0DDA8.toInt(); RIPPLE = 0x22000000
+            PRIMARY = 0xFFF7F7F5.toInt(); ON_PRIMARY = RED
+        } else {
+            BG = 0xFF000000.toInt(); CARD = 0xFF141414.toInt(); CARD2 = 0xFF242424.toInt(); TRACK = 0xFF2E2E2E.toInt()
+            LINE = 0xFF333333.toInt(); BTN_LINE = 0; TEXT = 0xFFEDEDEA.toInt(); TEXT2 = 0xFFA0A09C.toInt()
+            GREY = 0xFF8A8A86.toInt(); SEL = 0xFF4A4A47.toInt(); WARN = 0xFF3D3010.toInt(); RIPPLE = 0x33FFFFFF
+            PRIMARY = BLUE; ON_PRIMARY = 0xFFFFFFFF.toInt()
+        }
+    }
+
+    /** The window's own colours (status and navigation bars) to match. */
+    @Suppress("DEPRECATION")
+    fun paintWindow(a: android.app.Activity) {
+        val w = a.window
+        w.decorView.setBackgroundColor(BG)
+        w.statusBarColor = BG
+        w.navigationBarColor = BG
+        if (android.os.Build.VERSION.SDK_INT >= 23) {
+            var f = w.decorView.systemUiVisibility
+            f = if (grey) f or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else f and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+            if (android.os.Build.VERSION.SDK_INT >= 26) f = if (grey) f or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else f and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
+            w.decorView.systemUiVisibility = f
+        }
+    }
+
+    fun dialog(ctx: Context): android.app.AlertDialog.Builder =
+        android.app.AlertDialog.Builder(ctx, if (grey) android.R.style.Theme_Material_Light_Dialog_Alert else android.R.style.Theme_Material_Dialog_Alert)
+
     private val AVATAR = intArrayOf(0xFF1E88E5.toInt(), 0xFF43A047.toInt(), 0xFFE53935.toInt(), 0xFF8E24AA.toInt(),
         0xFFF4511E.toInt(), 0xFF00897B.toInt(), 0xFF6D4C41.toInt(), 0xFF3949AB.toInt())
 
     var u = 1f; private set
 
+    /** Drawn for a 320 × 450 screen, scaled to fit the real one (the CD99's 410 × 502 is about 1.1×). */
     fun init(ctx: Context) {
+        applyTheme(ctx)
         val dm = ctx.resources.displayMetrics
-        u = minOf(minOf(dm.widthPixels, dm.heightPixels) / 320f, dm.density * 1.3f).coerceAtLeast(0.75f)
+        val w = minOf(dm.widthPixels, dm.heightPixels)
+        val h = maxOf(dm.widthPixels, dm.heightPixels)
+        u = minOf(w / 320f, h / 450f, dm.density * 1.3f).coerceAtLeast(0.75f)
     }
 
     fun px(v: Number) = (v.toFloat() * u + 0.5f).toInt()
@@ -54,7 +101,7 @@ object Ui {
         if (stroke != 0) setStroke(px(1), stroke)
     }
 
-    fun ripple(colour: Int, radius: Float) = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), round(colour, radius), round(0xFFFFFFFF.toInt(), radius))
+    fun ripple(colour: Int, radius: Float, line: Int = BTN_LINE) = RippleDrawable(ColorStateList.valueOf(RIPPLE), round(colour, radius, line), round(0xFFFFFFFF.toInt(), radius))
 
     fun text(ctx: Context, s: CharSequence = "", size: Float = 14f, colour: Int = TEXT, bold: Boolean = false, lines: Int = 0): TextView =
         TextView(ctx).apply {
@@ -79,9 +126,10 @@ object Ui {
         }
 
     /** A round icon button. */
-    fun iconButton(ctx: Context, icon: String, size: Int = 44, colour: Int = CARD2, ink: Int = TEXT, desc: String = icon, onClick: () -> Unit): IconView =
+    fun iconButton(ctx: Context, icon: String, size: Int = 44, colour: Int = CARD2, ink: Int = TEXT, desc: String = icon,
+                   radius: Float = size / 2f, onClick: () -> Unit): IconView =
         IconView(ctx, icon, ink).apply {
-            background = ripple(colour, size / 2f)
+            background = ripple(colour, radius)
             contentDescription = desc
             pad = 0.26f
             isClickable = true
@@ -106,10 +154,10 @@ object Ui {
     /** A row of choices, one selected. */
     fun segmented(ctx: Context, labels: List<String>, selected: Int, size: Float = 13f, onPick: (Int) -> Unit): LinearLayout {
         val r = row(ctx)
-        r.background = round(CARD2, 999f)
+        r.background = round(CARD2, 999f, BTN_LINE)
         r.setPadding(px(3), px(3), px(3), px(3))
         val views = ArrayList<TextView>()
-        fun paint(sel: Int) { views.forEachIndexed { i, v -> v.background = if (i == sel) round(0xFF5A5A56.toInt(), 999f) else null; v.setTextColor(if (i == sel) TEXT else TEXT2) } }
+        fun paint(sel: Int) { views.forEachIndexed { i, v -> v.background = if (i == sel) round(SEL, 999f) else null; v.setTextColor(if (i == sel) TEXT else TEXT2) } }
         labels.forEachIndexed { i, s ->
             val v = text(ctx, s, size, TEXT2, true).apply {
                 gravity = Gravity.CENTER; setPadding(px(6), px(7), px(6), px(7)); isClickable = true
@@ -177,7 +225,7 @@ class IconView(ctx: Context, var icon: String, var ink: Int = Ui.TEXT) : View(ct
                 line(c, 4f, 17f, 20f, 17f); r.set(10f, 18.5f, 14f, 21.5f); c.drawArc(r, 0f, 180f, false, p) }
             "music" -> { line(c, 9f, 18f, 9f, 5f); line(c, 9f, 5f, 19f, 3f); line(c, 19f, 3f, 19f, 16f); fill(); c.drawCircle(6.5f, 18f, 2.6f, p); c.drawCircle(16.5f, 16f, 2.6f, p) }
             "pad" -> { rrect(c, 3f, 7f, 21f, 18f, 5f); line(c, 8f, 10.5f, 8f, 14.5f); line(c, 6f, 12.5f, 10f, 12.5f); fill(); c.drawCircle(15.5f, 11.5f, 1.2f, p); c.drawCircle(17.5f, 14f, 1.2f, p) }
-            "dial" -> { p.color = 0xFF5A5A56.toInt(); c.drawCircle(12f, 12f, 8f, p); p.color = ink; r.set(4f, 4f, 20f, 20f); c.drawArc(r, -90f, 240f, false, p) }
+            "dial" -> { p.color = Ui.TRACK; c.drawCircle(12f, 12f, 8f, p); p.color = ink; r.set(4f, 4f, 20f, 20f); c.drawArc(r, -90f, 240f, false, p) }
             "cog" -> { c.drawCircle(12f, 12f, 3f, p); for (i in 0 until 8) { c.save(); c.rotate(i * 45f, 12f, 12f); line(c, 12f, 3f, 12f, 5.5f); c.restore() }; c.drawCircle(12f, 12f, 6.5f, p) }
             "play" -> { fill(); poly(c, true, 8f, 5f, 19f, 12f, 8f, 19f) }
             "pause" -> { fill(); rrect(c, 6.5f, 5f, 10f, 19f, 1f); rrect(c, 14f, 5f, 17.5f, 19f, 1f) }
@@ -212,6 +260,11 @@ class IconView(ctx: Context, var icon: String, var ink: Int = Ui.TEXT) : View(ct
             "trash" -> { line(c, 4f, 7f, 20f, 7f); poly(c, false, 6f, 7f, 7f, 20f, 17f, 20f, 18f, 7f); poly(c, false, 9f, 7f, 9.5f, 4f, 14.5f, 4f, 15f, 7f) }
             "tap" -> { c.drawCircle(12f, 12f, 3f, p); c.drawCircle(12f, 12f, 7.5f, p) }
             "hold" -> { fill(); c.drawCircle(12f, 12f, 4f, p); stroke(); c.drawCircle(12f, 12f, 8f, p) }
+            "video" -> { rrect(c, 2.5f, 6.5f, 15.5f, 17.5f, 2.5f); poly(c, true, 15.5f, 10.5f, 21.5f, 7f, 21.5f, 17f, 15.5f, 13.5f) }
+            "rec" -> { fill(); p.color = Ui.RED; c.drawCircle(12f, 12f, 7f, p) }
+            "stop" -> { fill(); p.color = Ui.RED; rrect(c, 6.5f, 6.5f, 17.5f, 17.5f, 2f) }
+            "blank" -> { rrect(c, 7f, 2.5f, 17f, 21.5f, 2.5f); fill(); r.set(9f, 5f, 15f, 17f); c.drawRect(r, p) }
+            "unblank" -> { rrect(c, 7f, 2.5f, 17f, 21.5f, 2.5f); line(c, 10.5f, 18.5f, 13.5f, 18.5f); line(c, 9.5f, 9f, 14.5f, 9f); line(c, 9.5f, 12f, 14.5f, 12f) }
             "data" -> { line(c, 8f, 20f, 8f, 5f); poly(c, false, 4f, 9f, 8f, 5f, 12f, 9f); line(c, 16f, 4f, 16f, 19f); poly(c, false, 12f, 15f, 16f, 19f, 20f, 15f) }
         }
         stroke()
@@ -237,6 +290,7 @@ class DialView(ctx: Context) : View(ctx) {
     override fun onDraw(c: Canvas) {
         val size = minOf(width, height).toFloat()
         val sw = size * 0.11f
+        track.color = Ui.TRACK; txt.color = Ui.TEXT; small.color = Ui.TEXT2
         track.strokeWidth = sw; arc.strokeWidth = sw; arc.color = colour
         val cx = width / 2f; val cy = height / 2f; val rad = size / 2f - sw / 2f - 1f
         r.set(cx - rad, cy - rad, cx + rad, cy + rad)

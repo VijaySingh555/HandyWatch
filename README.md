@@ -1,23 +1,27 @@
-# HandyWatch v0.1
+# HandyWatch v0.2
 
-One app for two Android devices: the **phone** (Vivo X Fold5) and the **watch** (an Android 8
-watch, 320 × 480). The watch shows and controls the phone over classic Bluetooth.
+One app for two Android devices: the **phone** (Vivo X Fold5) and the **watch** (a CD99 Android 9
+watch, about 410 × 502). The watch shows and controls the phone over classic Bluetooth.
 
-- **Notifications:** the phone's notifications appear on the watch and buzz there. Dismissing one
-  on the watch dismisses it on the phone (Settings switch). Exclude apps on the phone.
-- **Music:** title, artist and app; previous, play/pause and next; the phone's music volume;
-  Find phone (rings for up to a minute); Lock phone.
+- **Notifications:** the phone's notifications appear on the watch and buzz there. Swipe one
+  sideways to dismiss it (on the phone too, if chosen); tap one for the full text and time.
+  Exclude apps on the phone.
+- **Music:** title, artist and app (long titles scroll); previous, play/pause and next; the
+  phone's music volume; Find phone (the ringtone as an alarm, heard in silent mode, with
+  vibration, for up to a minute); Lock phone.
 - **Control:**
-  - **Camera:** opens the phone's camera screen. The shutter fires now or after 5 s / 10 s (big
-    countdown and beeps on the phone). A small copy of each photo comes back to the watch.
-    Photos are saved in `Pictures/HandyWatch`.
-  - **Keys:** arrows (as swipes), play/pause, Back, Home, Recent apps, the notification shade,
-    and volume.
+  - **Camera:** a live preview from the phone (small JPEGs over Bluetooth, the next sent once
+    the last is shown). Photo or video, now or after 5 s / 10 s; a black-screen button lets
+    the phone film with its screen dark. Photos go to `Pictures/HandyWatch`, videos to
+    `Movies/HandyWatch`.
+  - **Keys:** a 3 × 3 pad: volume either side of up; left, play/pause, right; Back, down, Home.
+    The arrows are swipes on the phone, not arrow-key presses.
   - **Pad:** moves a pointer on the phone. Tap clicks, hold long-presses, two fingers scroll.
   - **Type:** text goes into the phone's focused text box. There are Delete and Enter buttons too.
 - **Status dials:** read from `esp_status.php` on rathour.net with the read key. They're fetched
   through the phone, so no internet is needed on the watch. They refresh every 5/10/30/60 s while
   the page is open, with an alert when a task finishes or fails. Display only: nothing is reported.
+- **Look:** OLED black or Grey (after HandyDash's grey pages), set on each device.
 - **Mobile data:** uses Android's own Bluetooth tethering (Android doesn't let apps switch it
   on). The phone's set-up screen opens the tethering setting. The watch's Settings show whether
   it's online through the phone.
@@ -45,6 +49,6 @@ Push to `main` (or run the workflow by hand). GitHub Actions builds a signed rel
 Bluetooth RFCOMM, service UUID `7d3f6a10-3b8e-4c1d-9a52-6e0b4f1c2d77`. The phone listens and the
 watch connects, retrying from 3 s up to 60 s apart. Each message is one line of JSON.
 Phone → watch messages are `{"t":...}`: `hello`, `nall`, `n+`, `n-`, `media`, `bat`, `cam`,
-`shot`, `ring`, `ctl`, `toast`, `dials`. Watch → phone messages are `{"cmd":...}`: `hello`,
+`shot`, `frame`, `ring`, `ctl`, `typed`, `toast`, `dials`. Watch → phone messages are `{"cmd":...}`: `hello`,
 `dismiss`, `dismissall`, `media`, `ring`, `lock`, `cam`, `key`, `pad`, `move`, `tap`, `hold`,
 `scroll`, `type`, `bksp`, `enter`, `dials`.

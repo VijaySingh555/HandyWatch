@@ -84,6 +84,7 @@ class WatchScreen(private val a: Activity) {
         tabs.forEachIndexed { j, t -> t.background = if (j == i) Ui.round(Ui.CARD2, 999f) else null; t.set(t.icon, if (j == i) Ui.TEXT else Ui.TEXT2) }
         if (i == 3) startDials() else stopDials()
         if (i == 4) paintSettings()
+        if (::camView.isInitialized) updateLive()
         if (i != 2 || controlTab != 2) svc?.let { if (it.connected && padShown) { it.cmd("pad", "on" to false); padShown = false } }
         hideKeyboard()
     }
@@ -97,6 +98,7 @@ class WatchScreen(private val a: Activity) {
 
     fun onPause() {
         resumed = false
+        if (liveOn) { liveOn = false; svc?.live(false) }
         svc?.onChange = null
         stopDials()
         main.removeCallbacksAndMessages(null)
@@ -114,9 +116,10 @@ class WatchScreen(private val a: Activity) {
             what.startsWith("toast:") -> Toast.makeText(a, what.substring(6), Toast.LENGTH_SHORT).show()
             what == "notifs" -> paintNotifications()
             what == "media" || what == "ring" -> paintMedia()
-            what == "cam" || what == "shot" -> paintCamera()
+            what == "cam" || what == "frame" -> paintCamera()
+            what == "shot" -> { shotUntil = System.currentTimeMillis() + 1500; paintCamera(); main.postDelayed({ paintCamera() }, 1600) }
             what == "exit" -> a.finishAffinity()
-            else -> paintAll()
+            else -> { paintAll(); updateLive() }
         }
     }
 
@@ -156,7 +159,7 @@ class WatchScreen(private val a: Activity) {
 
     private fun banner(col: LinearLayout): TextView {
         val b = Ui.text(a, "", 13f, Ui.TEXT).apply {
-            background = Ui.round(0xFF4A3B12.toInt(), 12f); setPadding(Ui.px(10), Ui.px(8), Ui.px(10), Ui.px(8)); visibility = View.GONE
+            background = Ui.round(Ui.WARN, 12f); setPadding(Ui.px(10), Ui.px(8), Ui.px(10), Ui.px(8)); visibility = View.GONE
             setOnClickListener { svc?.reconnect(); Toast.makeText(a, "Connecting…", Toast.LENGTH_SHORT).show() }
         }
         col.addView(b, Ui.lp(b = 8))
@@ -167,9 +170,11 @@ class WatchScreen(private val a: Activity) {
     private lateinit var nList: LinearLayout
     private lateinit var nBanner: TextView
     private lateinit var nClear: TextView
-    private val expanded = HashSet<String>()
+    private lateinit var nDetail: FrameLayout
+    private var detailKey: String? = null
 
     private fun notificationsPage(): View {
+        val frame = FrameLayout(a)
         val col = column()
         val h = header("Notifications")
         nClear = Ui.button(a, "Clear all", size = 12f) { confirmClear() }.apply { setPadding(Ui.px(10), Ui.px(5), Ui.px(10), Ui.px(5)); minHeight = Ui.px(30) }
@@ -178,12 +183,15 @@ class WatchScreen(private val a: Activity) {
         nBanner = banner(col)
         nList = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
         col.addView(nList)
-        return scroller(col)
+        frame.addView(scroller(col), FrameLayout.LayoutParams(-1, -1))
+        nDetail = FrameLayout(a).apply { setBackgroundColor(Ui.BG); visibility = View.GONE; isClickable = true }
+        frame.addView(nDetail, FrameLayout.LayoutParams(-1, -1))
+        return frame
     }
 
     private fun confirmClear() {
         val both = Prefs.dismissBoth(a)
-        AlertDialog.Builder(a).setTitle("Clear all?").setMessage(if (both) "They're dismissed on the phone too." else "They stay on the phone.")
+        Ui.dialog(a).setTitle("Clear all?").setMessage(if (both) "They're dismissed on the phone too." else "They stay on the phone.")
             .setPositiveButton("Clear") { _, _ -> svc?.dismissAll() }.setNegativeButton("Cancel", null).show()
     }
 
@@ -195,33 +203,89 @@ class WatchScreen(private val a: Activity) {
         else if (s != null && !s.notifyAccess) { nBanner.text = "On the phone, turn on HandyWatch's notification access."; nBanner.visibility = View.VISIBLE }
         val list = s?.notifs?.values?.toList() ?: emptyList()
         nClear.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
-        if (list.isEmpty()) {
-            nList.addView(Ui.text(a, "No notifications from your phone", 14f, Ui.TEXT2).apply { gravity = Gravity.CENTER; setPadding(0, Ui.px(60), 0, 0) }, Ui.lp())
-            return
-        }
+        if (list.isEmpty()) nList.addView(Ui.text(a, "No notifications from your phone", 14f, Ui.TEXT2).apply { gravity = Gravity.CENTER; setPadding(0, Ui.px(60), 0, 0) }, Ui.lp())
         for (n in list) nList.addView(notificationCard(n), Ui.lp(b = 6))
+        val k = detailKey
+        if (k != null && s?.notifs?.containsKey(k) != true) closeDetail() // dismissed elsewhere
     }
 
     private fun notificationCard(n: JSONObject): View {
         val key = n.optString("key")
         val app = n.optString("app")
-        val card = Ui.card(a).apply { setPadding(Ui.px(10), Ui.px(8), Ui.px(4), Ui.px(10)) }
+        val card = Ui.card(a).apply { setPadding(Ui.px(10), Ui.px(8), Ui.px(10), Ui.px(10)) }
         val top = Ui.row(a)
-        val av = Ui.text(a, app.take(1).uppercase(), 12f, 0xFFFFFFFF.toInt(), true).apply { gravity = Gravity.CENTER; background = Ui.round(Ui.avatarColour(app), 999f) }
-        top.addView(av, Ui.lp(Ui.px(22), Ui.px(22), r = 7))
+        top.addView(avatar(app, 22), Ui.lp(Ui.px(22), Ui.px(22), r = 7))
         top.addView(Ui.text(a, app + " · " + Ui.ago(n.optLong("when")), 12f, Ui.TEXT2, lines = 1), Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        top.addView(Ui.iconButton(a, "x", 30, Ui.CARD, Ui.TEXT2, "Dismiss") { svc?.dismissedHere(key) })
         card.addView(top)
         val title = n.optString("title")
-        if (title.isNotBlank()) card.addView(Ui.text(a, title, 15f, Ui.TEXT, true, 2), Ui.lp(t = 3, r = 8))
+        if (title.isNotBlank()) card.addView(Ui.text(a, title, 15f, Ui.TEXT, true, 1), Ui.lp(t = 4))
         val body = n.optString("body")
-        if (body.isNotBlank()) {
-            val bt = Ui.text(a, body, 14f, Ui.TEXT2, lines = if (expanded.contains(key)) 0 else 3)
-            card.addView(bt, Ui.lp(t = 3, r = 8))
-        }
-        card.setOnClickListener { if (!expanded.add(key)) expanded.remove(key); paintNotifications() }
+        if (body.isNotBlank()) card.addView(Ui.text(a, body, 14f, Ui.TEXT2, lines = 2), Ui.lp(t = 3))
+        swipeable(card, { svc?.dismissedHere(key) }) { openDetail(n) }
         return card
     }
+
+    private fun avatar(app: String, size: Int) = Ui.text(a, app.take(1).uppercase(), size * 0.55f, 0xFFFFFFFF.toInt(), true).apply {
+        gravity = Gravity.CENTER; background = Ui.round(Ui.avatarColour(app), 999f)
+    }
+
+    /** Swipe sideways to dismiss; tap to open. Vertical drags still scroll the list. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun swipeable(v: View, onDismiss: () -> Unit, onTap: () -> Unit) {
+        val slop = android.view.ViewConfiguration.get(a).scaledTouchSlop
+        var x0 = 0f; var y0 = 0f; var dragging = false
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { x0 = e.rawX; y0 = e.rawY; dragging = false; view.isPressed = true }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - x0; val dy = e.rawY - y0
+                    if (!dragging && Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy)) { dragging = true; view.parent.requestDisallowInterceptTouchEvent(true); view.isPressed = false }
+                    if (dragging) { view.translationX = dx; view.alpha = (1f - Math.abs(dx) / view.width).coerceIn(0.2f, 1f) }
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    view.isPressed = false
+                    val dx = e.rawX - x0
+                    if (dragging) {
+                        if (Math.abs(dx) > view.width * 0.33f) view.animate().translationX(Math.signum(dx) * view.width).alpha(0f).setDuration(140).withEndAction { onDismiss() }.start()
+                        else view.animate().translationX(0f).alpha(1f).setDuration(140).start()
+                    } else if (Math.abs(dx) < slop && Math.abs(e.rawY - y0) < slop) onTap()
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> { view.isPressed = false; view.animate().translationX(0f).alpha(1f).setDuration(140).start() }
+            }
+            true
+        }
+    }
+
+    private fun openDetail(n: JSONObject) {
+        val key = n.optString("key")
+        detailKey = key
+        nDetail.removeAllViews()
+        val col = column()
+        val bar = Ui.row(a).apply { setPadding(0, Ui.px(2), 0, Ui.px(8)) }
+        bar.addView(Ui.iconButton(a, "back", 40, desc = "Back") { closeDetail() })
+        bar.addView(View(a), Ui.lp(0, 1, 1f))
+        bar.addView(Ui.button(a, "Dismiss", size = 13f) { closeDetail(); svc?.dismissedHere(key) })
+        col.addView(bar)
+        val app = n.optString("app")
+        val who = Ui.row(a)
+        who.addView(avatar(app, 26), Ui.lp(Ui.px(26), Ui.px(26), r = 8))
+        who.addView(Ui.text(a, app, 14f, Ui.TEXT, true, 1), Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(who, Ui.lp(l = 2))
+        val whenMs = n.optLong("when")
+        val time = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(whenMs)) + " (" + Ui.ago(whenMs) + ")"
+        col.addView(Ui.text(a, time, 12.5f, Ui.TEXT2), Ui.lp(t = 6, l = 2))
+        val title = n.optString("title")
+        if (title.isNotBlank()) col.addView(Ui.text(a, title, 17f, Ui.TEXT, true), Ui.lp(t = 10, l = 2, r = 2))
+        val body = n.optString("body")
+        if (body.isNotBlank()) col.addView(Ui.text(a, body, 15f, Ui.TEXT).apply { setTextIsSelectable(false) }, Ui.lp(t = 8, l = 2, r = 2, b = 12))
+        nDetail.addView(scroller(col), FrameLayout.LayoutParams(-1, -1))
+        nDetail.visibility = View.VISIBLE
+    }
+
+    private fun closeDetail() { detailKey = null; nDetail.visibility = View.GONE; nDetail.removeAllViews() }
+
+    /** The watch's back button: close the open notification first. */
+    fun back(): Boolean { if (page == 0 && detailKey != null) { closeDetail(); return true }; return false }
 
     // ================= Music
     private lateinit var mApp: TextView
@@ -229,26 +293,34 @@ class WatchScreen(private val a: Activity) {
     private lateinit var mArtist: TextView
     private lateinit var mPlay: IconView
     private lateinit var mVolBar: View
-    private lateinit var mVolTrack: LinearLayout
     private lateinit var mVolRest: View
+    private lateinit var mVolTrack: LinearLayout
     private lateinit var mVolText: TextView
     private lateinit var mRing: TextView
+
+    /** One line each, scrolling sideways when too long, so the buttons below never move. */
+    private fun marquee(size: Float, colour: Int, bold: Boolean) = Ui.text(a, "", size, colour, bold).apply {
+        gravity = Gravity.CENTER; setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MARQUEE
+        marqueeRepeatLimit = -1; isSelected = true; setHorizontallyScrolling(true)
+    }
+
+    private fun setIfChanged(t: TextView, s: String) { if (t.text.toString() != s) t.text = s }
 
     private fun mediaPage(): View {
         val col = column().apply { gravity = Gravity.CENTER_HORIZONTAL }
         col.addView(header("Music"))
-        mApp = Ui.text(a, "", 12f, Ui.TEXT2, lines = 1).apply { gravity = Gravity.CENTER }
-        col.addView(mApp, Ui.lp(t = 6))
-        mTitle = Ui.text(a, "", 20f, Ui.TEXT, true, 2).apply { gravity = Gravity.CENTER }
-        col.addView(mTitle, Ui.lp(t = 6, l = 6, r = 6))
-        mArtist = Ui.text(a, "", 14f, Ui.TEXT2, lines = 1).apply { gravity = Gravity.CENTER }
-        col.addView(mArtist, Ui.lp(t = 4))
+        mApp = marquee(12f, Ui.TEXT2, false)
+        col.addView(mApp, Ui.lp(h = Ui.px(16), t = 2))
+        mTitle = marquee(20f, Ui.TEXT, true)
+        col.addView(mTitle, Ui.lp(h = Ui.px(28), t = 6, l = 4, r = 4))
+        mArtist = marquee(14f, Ui.TEXT2, false)
+        col.addView(mArtist, Ui.lp(h = Ui.px(20), t = 2, l = 4, r = 4))
         val btns = Ui.row(a, Gravity.CENTER)
         btns.addView(Ui.iconButton(a, "prev", 58, desc = "Previous") { svc?.cmd("media", "a" to "prev") })
-        mPlay = Ui.iconButton(a, "play", 78, Ui.BLUE, 0xFFFFFFFF.toInt(), "Play or pause") { svc?.cmd("media", "a" to "playpause") }
+        mPlay = Ui.iconButton(a, "play", 78, Ui.PRIMARY, Ui.ON_PRIMARY, "Play or pause") { svc?.cmd("media", "a" to "playpause") }
         btns.addView(mPlay, Ui.lp(Ui.px(78), Ui.px(78), l = 16, r = 16))
         btns.addView(Ui.iconButton(a, "next", 58, desc = "Next") { svc?.cmd("media", "a" to "next") })
-        col.addView(btns, Ui.lp(t = 18))
+        col.addView(btns, Ui.lp(t = 14))
         val vol = Ui.row(a)
         vol.addView(Ui.iconButton(a, "voldown", 46, desc = "Volume down") { svc?.cmd("media", "a" to "voldown") })
         mVolTrack = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; background = Ui.round(Ui.TRACK, 999f) }
@@ -258,14 +330,14 @@ class WatchScreen(private val a: Activity) {
         mVolTrack.addView(mVolRest, LinearLayout.LayoutParams(0, -1, 1f))
         vol.addView(mVolTrack, Ui.lp(0, Ui.px(8), 1f, 10, 0, 10, 0))
         vol.addView(Ui.iconButton(a, "volup", 46, desc = "Volume up") { svc?.cmd("media", "a" to "volup") })
-        col.addView(vol, Ui.lp(t = 20, l = 4, r = 4))
+        col.addView(vol, Ui.lp(t = 16, l = 4, r = 4))
         mVolText = Ui.text(a, "", 12f, Ui.TEXT2).apply { gravity = Gravity.CENTER }
-        col.addView(mVolText, Ui.lp(t = 2))
+        col.addView(mVolText, Ui.lp(h = Ui.px(16), t = 2))
         val extra = Ui.row(a, Gravity.CENTER)
         mRing = Ui.button(a, "Find phone", size = 13f) { svc?.let { it.cmd("ring", "on" to !it.ringing) } }
         extra.addView(mRing, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, r = 4))
         extra.addView(Ui.button(a, "Lock phone", size = 13f) { svc?.cmd("lock") }, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, l = 4))
-        col.addView(extra, Ui.lp(t = 18))
+        col.addView(extra, Ui.lp(t = 12))
         return scroller(col)
     }
 
@@ -273,10 +345,10 @@ class WatchScreen(private val a: Activity) {
         val s = svc
         val m = s?.media
         val has = m?.optBoolean("has") == true
-        mApp.text = if (s?.connected != true) "Phone not connected" else if (has) m!!.optString("app") else "Nothing playing on the phone"
-        mTitle.text = if (has) m!!.optString("title").ifBlank { "Unknown track" } else ""
-        mArtist.text = if (has) m!!.optString("artist") else ""
-        mPlay.set(if (has && m!!.optBoolean("playing")) "pause" else "play", 0xFFFFFFFF.toInt())
+        setIfChanged(mApp, if (s?.connected != true) "Phone not connected" else if (has) m!!.optString("app") else "Nothing playing on the phone")
+        setIfChanged(mTitle, if (has) m!!.optString("title").ifBlank { "Unknown track" } else "")
+        setIfChanged(mArtist, if (has) m!!.optString("artist") else "")
+        mPlay.set(if (has && m!!.optBoolean("playing")) "pause" else "play", Ui.ON_PRIMARY)
         val max = m?.optInt("max", 0) ?: 0
         val vol = m?.optInt("vol", 0) ?: 0
         val part = if (max > 0) vol.toFloat() / max else 0f
@@ -287,89 +359,128 @@ class WatchScreen(private val a: Activity) {
         val ringing = s?.ringing == true
         mRing.text = if (ringing) "Stop ringing" else "Find phone"
         mRing.background = Ui.ripple(if (ringing) Ui.RED else Ui.CARD2, 999f)
+        mRing.setTextColor(if (ringing) 0xFFFFFFFF.toInt() else Ui.TEXT)
     }
 
     // ================= Control
     private var controlTab = 0
     private var padShown = false
+    private var liveOn = false
     private val controlViews = ArrayList<View>()
-    private lateinit var camStatus: TextView
-    private lateinit var camShot: ImageView
-    private lateinit var camOpenBtn: TextView
+    private lateinit var camView: ImageView
+    private lateinit var camNote: TextView
+    private lateinit var camBadge: TextView
+    private lateinit var camShutter: IconView
+    private lateinit var camBlankBtn: IconView
+    private lateinit var camCloseBtn: IconView
+    private var shotUntil = 0L
 
     private fun controlPage(): View {
         val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(Ui.px(8), Ui.px(4), Ui.px(8), Ui.px(6)) }
-        val tabsRow = Ui.segmented(a, listOf("Camera", "Keys", "Pad", "Type"), 0, 12.5f) { i -> controlShow(i) }
-        col.addView(tabsRow, Ui.lp(b = 8))
+        controlTab = Prefs.p(a).getInt("control_tab", 0)
+        val tabsRow = Ui.segmented(a, listOf("Camera", "Keys", "Pad", "Type"), controlTab, 12.5f) { i -> controlShow(i) }
+        col.addView(tabsRow, Ui.lp(b = 6))
         val holder = FrameLayout(a)
         col.addView(holder, Ui.lp(h = 0, weight = 1f))
         listOf(cameraTab(), keysTab(), padTab(), typeTab()).forEach { controlViews += it; holder.addView(it, FrameLayout.LayoutParams(-1, -1)) }
-        controlShow(0)
+        controlShow(controlTab)
         return col
     }
 
     private fun controlShow(i: Int) {
         controlTab = i
+        Prefs.set(a, "control_tab", i)
         controlViews.forEachIndexed { j, v -> v.visibility = if (j == i) View.VISIBLE else View.GONE }
         if (i != 2 && padShown) { svc?.cmd("pad", "on" to false); padShown = false }
         if (i != 3) hideKeyboard()
+        updateLive()
+    }
+
+    /** Frames come only while the camera tab is on screen and the phone's camera is open. */
+    private fun updateLive() {
+        val s = svc
+        val want = resumed && page == 2 && controlTab == 0 && s?.connected == true && s.camOpen
+        if (want != liveOn) { liveOn = want; s?.live(want) }
     }
 
     private fun cameraTab(): View {
-        val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-        camStatus = Ui.text(a, "", 13f, Ui.TEXT2).apply { gravity = Gravity.CENTER }
-        col.addView(camStatus, Ui.lp())
-        camShot = ImageView(a).apply { scaleType = ImageView.ScaleType.CENTER_CROP; background = Ui.round(Ui.CARD, 14f); clipToOutline = true }
-        col.addView(camShot, Ui.lp(Ui.px(150), Ui.px(112), t = 6))
-        val timer = Ui.segmented(a, listOf("Now", "5 s", "10 s"), Prefs.p(a).getInt("timer", 0), 12.5f) { i -> Prefs.set(a, "timer", i) }
-        col.addView(timer, Ui.lp(Ui.px(200), ViewGroup.LayoutParams.WRAP_CONTENT, t = 10))
+        val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+        // the preview, as big as the page allows
+        val box = FrameLayout(a).apply { background = Ui.round(0xFF000000.toInt(), 14f); clipToOutline = true; isClickable = true
+            setOnClickListener { svc?.let { if (!it.camOpen) it.cmd("cam", "a" to "open") } } }
+        camView = ImageView(a).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+        box.addView(camView, FrameLayout.LayoutParams(-1, -1))
+        camNote = Ui.text(a, "", 15f, 0xFFEDEDEA.toInt(), true).apply { gravity = Gravity.CENTER; setPadding(Ui.px(12), 0, Ui.px(12), 0) }
+        box.addView(camNote, FrameLayout.LayoutParams(-1, -1))
+        camBadge = Ui.text(a, "", 13f, 0xFFFFFFFF.toInt(), true).apply { background = Ui.round(Ui.RED, 999f); setPadding(Ui.px(9), Ui.px(3), Ui.px(9), Ui.px(3)); visibility = View.GONE }
+        box.addView(camBadge, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = Ui.px(6) })
+        col.addView(box, Ui.lp(h = 0, weight = 1f))
+        // photo or video, and the timer
+        val modes = Ui.row(a)
+        modes.addView(Ui.segmented(a, listOf("Photo", "Video"), Prefs.p(a).getInt("cam_mode", 0), 12f) { i -> Prefs.set(a, "cam_mode", i); paintCamera() },
+            Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, r = 4))
+        modes.addView(Ui.segmented(a, listOf("Now", "5 s", "10 s"), Prefs.p(a).getInt("timer", 0), 12f) { i -> Prefs.set(a, "timer", i) },
+            Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.25f, l = 4))
+        col.addView(modes, Ui.lp(t = 6))
+        // close, switch, shutter, black screen
         val row = Ui.row(a, Gravity.CENTER)
-        row.addView(Ui.iconButton(a, "flip", 50, desc = "Switch camera") { svc?.cmd("cam", "a" to "lens") })
-        val shutter = Ui.iconButton(a, "camera", 80, 0xFFFFFFFF.toInt(), Ui.BG, "Shutter") {
+        camCloseBtn = Ui.iconButton(a, "x", 42, desc = "Close the phone's camera") { svc?.cmd("cam", "a" to "close") }
+        row.addView(camCloseBtn, Ui.lp(Ui.px(42), Ui.px(42)))
+        row.addView(Ui.iconButton(a, "flip", 46, desc = "Switch camera") { svc?.cmd("cam", "a" to "lens") }, Ui.lp(Ui.px(46), Ui.px(46), l = 10))
+        camShutter = Ui.iconButton(a, "camera", 66, Ui.PRIMARY, Ui.ON_PRIMARY, "Shutter") {
             val d = when (Prefs.p(a).getInt("timer", 0)) { 1 -> 5; 2 -> 10; else -> 0 }
-            svc?.cmd("cam", "a" to "shoot", "delay" to d)
+            val video = Prefs.p(a).getInt("cam_mode", 0) == 1
+            svc?.let { if (it.camRec) it.cmd("cam", "a" to "shoot", "video" to true) else it.cmd("cam", "a" to "shoot", "delay" to d, "video" to video) }
         }
-        row.addView(shutter, Ui.lp(Ui.px(80), Ui.px(80), l = 18, r = 18))
-        camOpenBtn = Ui.button(a, "Open", size = 12.5f) { svc?.let { it.cmd("cam", "a" to if (it.camOpen) "close" else "open") } }
-        row.addView(camOpenBtn, Ui.lp(Ui.px(64), ViewGroup.LayoutParams.WRAP_CONTENT))
-        col.addView(row, Ui.lp(t = 10))
-        return scroller(col)
+        row.addView(camShutter, Ui.lp(Ui.px(66), Ui.px(66), l = 14, r = 14))
+        camBlankBtn = Ui.iconButton(a, "blank", 46, desc = "Black out the phone's screen") { svc?.let { it.cmd("cam", "a" to "blank", "on" to !it.camBlank) } }
+        row.addView(camBlankBtn, Ui.lp(Ui.px(46), Ui.px(46), r = 10))
+        row.addView(View(a), Ui.lp(Ui.px(42), Ui.px(42)))
+        col.addView(row, Ui.lp(t = 6))
+        return col
     }
 
     private fun paintCamera() {
+        if (!::camView.isInitialized) return
         val s = svc
-        camStatus.text = when {
+        val open = s?.connected == true && s.camOpen
+        val video = Prefs.p(a).getInt("cam_mode", 0) == 1
+        val showingShot = System.currentTimeMillis() < shotUntil && s?.shot != null
+        camView.setImageBitmap(if (showingShot) s!!.shot else if (open) s!!.frame else null)
+        camNote.text = when {
             s?.connected != true -> "Phone not connected"
-            s.camCount > 0 -> "Taking a photo in ${s.camCount}…"
-            s.camOpen -> "The phone's camera is open"
-            else -> "The shutter opens the phone's camera"
+            s.camCount > 0 -> s.camCount.toString()
+            !s.camOpen -> "Tap to start the phone's camera"
+            s.frame == null && !showingShot -> "Starting the preview…"
+            else -> ""
         }
-        camOpenBtn.text = if (s?.camOpen == true) "Close" else "Open"
-        camShot.setImageBitmap(s?.shot)
+        camNote.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, (if (s?.camCount ?: 0 > 0) 64f else 15f) * Ui.u)
+        camBadge.visibility = if (s?.camRec == true || s?.camBlank == true) View.VISIBLE else View.GONE
+        camBadge.text = (if (s?.camRec == true) "● %d:%02d".format(s.camSecs / 60, s.camSecs % 60) else "") +
+            (if (s?.camRec == true && s.camBlank) "  ·  " else "") + (if (s?.camBlank == true) "Phone screen off" else "")
+        camShutter.set(if (s?.camRec == true) "stop" else if (video) "rec" else "camera", Ui.ON_PRIMARY)
+        camBlankBtn.set(if (s?.camBlank == true) "unblank" else "blank", Ui.TEXT)
+        camCloseBtn.alpha = if (open) 1f else 0.35f
+        updateLive()
     }
 
     private fun keysTab(): View {
-        val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-        fun key(ic: String, k: String, desc: String, size: Int = 58, colour: Int = Ui.CARD2) = Ui.iconButton(a, ic, size, colour, desc = desc) { svc?.cmd("key", "k" to k) }
-        val cross = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-        cross.addView(key("up", "up", "Up"))
-        val mid = Ui.row(a, Gravity.CENTER)
-        mid.addView(key("left", "left", "Left"))
-        mid.addView(key("playpause", "play", "Play or pause", 62, Ui.BLUE), Ui.lp(Ui.px(62), Ui.px(62), l = 8, r = 8, t = 4, b = 4))
-        mid.addView(key("right", "right", "Right"))
-        cross.addView(mid, Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        cross.addView(key("down", "down", "Down"))
-        col.addView(cross, Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, t = 2))
-        val nav = Ui.row(a, Gravity.CENTER)
-        listOf(Triple("back", "back", "Back"), Triple("home", "home", "Home"), Triple("recents", "recents", "Recent apps"), Triple("shade", "notifs", "Notification shade")).forEach { (ic, k, d) ->
-            nav.addView(key(ic, k, d, 48), Ui.lp(Ui.px(48), Ui.px(48), l = 5, r = 5))
+        // a 3 × 3 pad of big keys: volume either side of up, Back bottom-left, Home bottom-right
+        val grid = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+        fun key(ic: String, k: String, desc: String, colour: Int = Ui.CARD2, ink: Int = Ui.TEXT) =
+            Ui.iconButton(a, ic, 60, colour, ink, desc, radius = 20f) { svc?.cmd("key", "k" to k) }.apply { pad = 0.3f }
+        val rows = listOf(
+            listOf(key("voldown", "voldown", "Volume down"), key("up", "up", "Up"), key("volup", "volup", "Volume up")),
+            listOf(key("left", "left", "Left"), key("playpause", "play", "Play or pause", Ui.PRIMARY, Ui.ON_PRIMARY), key("right", "right", "Right")),
+            listOf(key("back", "back", "Back"), key("down", "down", "Down"), key("home", "home", "Home")))
+        for ((ri, r) in rows.withIndex()) {
+            val row = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
+            for ((ci, k) in r.withIndex()) row.addView(k, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                setMargins(if (ci == 0) 0 else Ui.px(4), 0, if (ci == 2) 0 else Ui.px(4), 0) })
+            grid.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+                setMargins(0, if (ri == 0) 0 else Ui.px(4), 0, if (ri == 2) 0 else Ui.px(4)) })
         }
-        col.addView(nav, Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, t = 12))
-        val vol = Ui.row(a, Gravity.CENTER)
-        vol.addView(key("voldown", "voldown", "Volume down", 48), Ui.lp(Ui.px(48), Ui.px(48), r = 10))
-        vol.addView(key("volup", "volup", "Volume up", 48), Ui.lp(Ui.px(48), Ui.px(48), l = 10))
-        col.addView(vol, Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, t = 10))
-        return scroller(col)
+        return grid
     }
 
     private fun padTab(): View {
@@ -401,11 +512,15 @@ class WatchScreen(private val a: Activity) {
         val box = EditText(a).apply {
             setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 16f * Ui.u); setTextColor(Ui.TEXT); setHintTextColor(Ui.GREY)
             hint = "Type here"; background = Ui.round(Ui.CARD, 14f, Ui.LINE); setPadding(Ui.px(12), Ui.px(10), Ui.px(12), Ui.px(10))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            minLines = 2; maxLines = 4; gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setHorizontallyScrolling(false); minLines = 2; maxLines = 4; gravity = Gravity.TOP or Gravity.START
             imeOptions = EditorInfo.IME_ACTION_SEND
         }
-        fun sendText() { val t = box.text.toString(); if (t.isNotEmpty() && svc?.cmd("type", "text" to t) == true) box.setText("") }
+        fun sendText() {
+            val t = box.text.toString()
+            if (t.isEmpty()) return
+            if (svc?.cmd("type", "text" to t) == true) { box.setText(""); Toast.makeText(a, "Sent to the phone", Toast.LENGTH_SHORT).show() }
+        }
         box.setOnEditorActionListener { _, id, _ -> if (id == EditorInfo.IME_ACTION_SEND) { sendText(); true } else false }
         col.addView(box, Ui.lp())
         val row = Ui.row(a, Gravity.CENTER)
@@ -529,7 +644,7 @@ class WatchScreen(private val a: Activity) {
         col.addView(Ui.text(a, t.optString("app"), 13f, Ui.TEXT2).apply { gravity = Gravity.CENTER }, Ui.lp(t = 2))
         col.addView(Ui.text(a, line2, 13f, Ui.TEXT2).apply { gravity = Gravity.CENTER }, Ui.lp(t = 6))
         if (t.optString("msg").isNotBlank()) col.addView(Ui.text(a, t.optString("msg"), 14f, Ui.TEXT).apply { gravity = Gravity.CENTER }, Ui.lp(t = 6))
-        AlertDialog.Builder(a, android.R.style.Theme_Material_Dialog_Alert).setView(col).setPositiveButton("Close", null).show()
+        Ui.dialog(a).setView(col).setPositiveButton("Close", null).show()
     }
 
     // ================= Settings
@@ -568,6 +683,11 @@ class WatchScreen(private val a: Activity) {
         sCol.removeAllViews()
         val s = svc
         sCol.addView(header("Settings"))
+        // look
+        val lk = section("Look")
+        lk.addView(Ui.segmented(a, listOf("OLED black", "Grey"), if (Ui.grey) 1 else 0, 12.5f) { i ->
+            Prefs.set(a, "theme", if (i == 1) "grey" else "oled"); main.post { (a as MainActivity).rebuild() }
+        }, Ui.lp())
         // phone
         val ph = section("Phone", "HandyWatch must be running on the phone too, set as the phone.")
         valueRow(ph, "Connect to", Prefs.phoneName(a).ifBlank { "Choose your phone" }) { choosePhone() }
@@ -610,11 +730,11 @@ class WatchScreen(private val a: Activity) {
         if (ad == null || !ad.isEnabled) { Toast.makeText(a, "Switch Bluetooth on first", Toast.LENGTH_SHORT).show(); return }
         val devs = runCatching { ad.bondedDevices.toList() }.getOrDefault(emptyList()).sortedBy { (it.name ?: it.address).lowercase() }
         if (devs.isEmpty()) {
-            AlertDialog.Builder(a).setTitle("No paired phones").setMessage("Pair the phone in Bluetooth settings first.")
+            Ui.dialog(a).setTitle("No paired phones").setMessage("Pair the phone in Bluetooth settings first.")
                 .setPositiveButton("Open Bluetooth") { _, _ -> open(Settings.ACTION_BLUETOOTH_SETTINGS) }.setNegativeButton("Cancel", null).show()
             return
         }
-        AlertDialog.Builder(a).setTitle("Your phone").setItems(devs.map { it.name ?: it.address }.toTypedArray()) { _, i ->
+        Ui.dialog(a).setTitle("Your phone").setItems(devs.map { it.name ?: it.address }.toTypedArray()) { _, i ->
             Prefs.setPhone(a, devs[i].address, devs[i].name ?: devs[i].address)
             svc?.reconnect()
             paintSettings()
@@ -627,7 +747,7 @@ class WatchScreen(private val a: Activity) {
             inputType = if (secret) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         val box = FrameLayout(a).apply { setPadding(Ui.px(16), Ui.px(4), Ui.px(16), 0); addView(input) }
-        AlertDialog.Builder(a).setTitle(title).setView(box)
+        Ui.dialog(a).setTitle(title).setView(box)
             .setPositiveButton("Save") { _, _ -> save(input.text.toString().trim()); paintSettings(); lastStates.clear(); if (page == 3) fetchDials() }
             .setNegativeButton("Cancel", null).show()
     }
@@ -640,7 +760,7 @@ class WatchScreen(private val a: Activity) {
     }
 
     private fun switchRole() {
-        AlertDialog.Builder(a).setTitle("Use as the phone?").setMessage("This device will share its notifications and music instead of showing the phone's.")
+        Ui.dialog(a).setTitle("Use as the phone?").setMessage("This device will share its notifications and music instead of showing the phone's.")
             .setPositiveButton("Switch") { _, _ -> (a as MainActivity).setRole(Prefs.ROLE_PHONE) }.setNegativeButton("Cancel", null).show()
     }
 }

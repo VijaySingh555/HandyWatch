@@ -12,7 +12,6 @@ import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.media.AudioManager
 import android.media.MediaMetadata
-import android.media.Ringtone
 import android.media.RingtoneManager
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
@@ -46,7 +45,6 @@ class PhoneService : Service() {
     var status = "Starting…"; private set
     var onUi: (() -> Unit)? = null
     private val main = Handler(Looper.getMainLooper())
-    private var ringer: Ringtone? = null
     private var controller: MediaController? = null
     private var lastBattery = -1
     private var lastCharging = false
@@ -62,7 +60,7 @@ class PhoneService : Service() {
         link = BtLink(true, { "" }, { line -> main.post { onLine(line) } }) { up, s ->
             main.post {
                 status = if (up) "Watch connected: $s" else s
-                if (up) sendAll()
+                if (up) { liveWanted = false; sendAll(); CameraActivity.current?.sendState() }
                 onUi?.invoke()
             }
         }
@@ -83,7 +81,7 @@ class PhoneService : Service() {
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
         link.stop()
-        ringer?.stop()
+        stopRinging()
         runCatching { unregisterReceiver(battery) }
         runCatching { contentResolver.unregisterContentObserver(volumeWatch) }
         controller?.unregisterCallback(musicCb)
@@ -247,7 +245,7 @@ class PhoneService : Service() {
             "media" -> media(o.optString("a"))
             "ring" -> ring(o.optBoolean("on"))
             "lock" -> { Lock.toggle(this) }
-            "cam" -> camera(o.optString("a"), o.optInt("delay", 0))
+            "cam" -> camera(o)
             "key" -> if (o.optString("k") == "play") media("playpause")
                 else if (o.optString("k") == "volup" || o.optString("k") == "voldown") media(o.optString("k"))
                 else if (ctl == null) needControl() else ctl.key(o.optString("k"))
@@ -265,35 +263,99 @@ class PhoneService : Service() {
 
     private fun needControl() = toWatch("On the phone, turn on HandyWatch control (Accessibility)")
 
-    // ---- find my phone
+    // ---- find my phone: the ringtone as an alarm (heard in silent and vibrate mode), at full alarm volume, with vibration
+    private var player: android.media.MediaPlayer? = null
+    private var savedAlarmVol = -1
+
     private fun ring(on: Boolean) {
-        ringer?.stop()
-        ringer = null
+        stopRinging()
         if (on) {
-            val uri = RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_RINGTONE)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            ringer = RingtoneManager.getRingtone(this, uri)?.apply {
-                if (Build.VERSION.SDK_INT >= 28) isLooping = true
-                play()
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            runCatching {
+                savedAlarmVol = am.getStreamVolume(AudioManager.STREAM_ALARM)
+                am.setStreamVolume(AudioManager.STREAM_ALARM, am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
             }
-            main.postDelayed({ if (ringer != null) ring(false) }, 60_000) // stops by itself after a minute
+            val uris = listOfNotNull(
+                RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_RINGTONE),
+                RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_ALARM),
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+                android.provider.Settings.System.DEFAULT_RINGTONE_URI)
+            for (u in uris) {
+                val mp = android.media.MediaPlayer()
+                try {
+                    mp.setAudioAttributes(android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                    mp.setDataSource(this, u)
+                    mp.isLooping = true
+                    mp.prepare()
+                    mp.start()
+                    player = mp
+                    break
+                } catch (_: Exception) { runCatching { mp.release() } }
+            }
+            vibrate(true)
+            main.postDelayed(stopLater, 60_000) // stops by itself after a minute
         }
-        send("ring", "on" to (ringer != null))
+        send("ring", "on" to (player != null))
+        if (on && player == null) toWatch("The phone couldn't play its ringtone")
+    }
+
+    private val stopLater = Runnable { stopRinging(); send("ring", "on" to false) }
+
+    private fun stopRinging() {
+        main.removeCallbacks(stopLater)
+        player?.let { runCatching { it.stop() }; runCatching { it.release() } }
+        player = null
+        vibrate(false)
+        if (savedAlarmVol >= 0) {
+            runCatching { (getSystemService(Context.AUDIO_SERVICE) as AudioManager).setStreamVolume(AudioManager.STREAM_ALARM, savedAlarmVol, 0) }
+            savedAlarmVol = -1
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun vibrate(on: Boolean) {
+        val v = getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+        if (!on) { v.cancel(); return }
+        val pattern = longArrayOf(0, 600, 400)
+        if (Build.VERSION.SDK_INT >= 26) v.vibrate(android.os.VibrationEffect.createWaveform(pattern, 0)) else v.vibrate(pattern, 0)
     }
 
     // ---- the camera: the phone's own camera screen, opened from the watch
-    private fun camera(a: String, delay: Int) {
+    private fun camera(o: JSONObject) {
         val cur = CameraActivity.current
-        when (a) {
-            "open" -> openCamera(false, 0)
+        val delay = o.optInt("delay", 0)
+        when (o.optString("a")) {
+            "open" -> if (cur == null) openCamera(false, 0, false) else cur.sendState()
             "close" -> cur?.finish()
-            "shoot" -> if (cur != null) cur.shoot(delay) else openCamera(true, delay) // shoots once the camera is ready
+            "shoot" -> if (cur != null) cur.shoot(delay, o.optBoolean("video")) else openCamera(true, delay, o.optBoolean("video"))
             "lens" -> cur?.switchLens()
+            "blank" -> cur?.setBlank(o.optBoolean("on"))
+            "live" -> { liveWanted = o.optBoolean("on"); frameBusy = false }
+            "ack" -> frameBusy = false
         }
     }
 
-    private fun openCamera(shoot: Boolean, delay: Int) {
-        val i = Intent(this, CameraActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("shoot", shoot).putExtra("delay", delay)
+    // ---- the live preview: one small JPEG at a time, the next only after the watch has shown the last
+    @Volatile var liveWanted = false
+    @Volatile private var frameBusy = false
+    @Volatile private var frameAt = 0L
+    fun wantsFrame(): Boolean {
+        if (!liveWanted || !link.connected) return false
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (frameBusy && now - frameAt < 1500) return false // an answer was lost: send again after 1.5 s
+        return now - frameAt >= 90
+    }
+    fun sendFrame(b64: String, rot: Int) {
+        frameBusy = true
+        frameAt = android.os.SystemClock.elapsedRealtime()
+        send("frame", "jpg" to b64, "rot" to rot)
+    }
+
+    private fun openCamera(shoot: Boolean, delay: Int, video: Boolean) {
+        val i = Intent(this, CameraActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra("shoot", shoot).putExtra("delay", delay).putExtra("video", video)
         // Android only lets an app open a screen from the background while its accessibility service is on
         val from: Context = ControlAccess.instance ?: this
         try { from.startActivity(i) } catch (_: Exception) { }
@@ -302,7 +364,7 @@ class PhoneService : Service() {
         }, 2500)
     }
 
-    fun cameraState(open: Boolean, front: Boolean, count: Int) = send("cam", "open" to open, "front" to front, "count" to count)
+    fun cameraState(o: JSONObject) = send(o.put("t", "cam"))
     fun sendShot(b64: String) = send("shot", "jpg" to b64)
 
     // ---- status dials: fetched here and passed to the watch (so it works without the watch's own internet)

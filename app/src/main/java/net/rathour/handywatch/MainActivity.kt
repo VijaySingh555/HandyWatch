@@ -47,6 +47,8 @@ class MainActivity : Activity() {
     }
 
     private fun build() {
+        Ui.init(this)
+        Ui.paintWindow(this)
         watch = null; phoneCol = null
         when (Prefs.role(this)) {
             Prefs.ROLE_WATCH -> { val w = WatchScreen(this); watch = w; setContentView(w.build()) }
@@ -54,6 +56,21 @@ class MainActivity : Activity() {
             else -> setContentView(rolePicker())
         }
         if (Prefs.role(this).isNotEmpty()) { askPermissions(); Sys.startService(this) }
+    }
+
+    /** After a change of look: build the screen again in the new colours. */
+    fun rebuild() {
+        val page = Prefs.page(this)
+        watch?.onPause()
+        build()
+        if (resumed) { watch?.onResume(); hookPhone() }
+        watch?.show(page)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (watch?.back() == true) return
+        @Suppress("DEPRECATION") super.onBackPressed()
     }
 
     fun setRole(r: String) {
@@ -90,6 +107,7 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) p += Manifest.permission.POST_NOTIFICATIONS
         if (Prefs.role(this) == Prefs.ROLE_PHONE) {
             p += Manifest.permission.CAMERA
+            p += Manifest.permission.RECORD_AUDIO
             if (Build.VERSION.SDK_INT <= 28) p += Manifest.permission.WRITE_EXTERNAL_STORAGE
         }
         val missing = p.filter { !granted(it) }
@@ -155,7 +173,7 @@ class MainActivity : Activity() {
             t.addView(Ui.text(this, title, 14.5f, Ui.TEXT, true))
             t.addView(Ui.text(this, help, 12f, Ui.TEXT2), Ui.lp(t = 2))
             r.addView(t, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, r = 8))
-            r.addView(Ui.text(this, when (on) { true -> "On"; false -> "Off"; null -> "Open" }, 13f, when (on) { true -> Ui.GREEN; false -> Ui.AMBER; null -> Ui.TEXT2 }, true))
+            r.addView(Ui.text(this, when (on) { true -> "On"; false -> "Off"; null -> "Open" }, 13f, when (on) { true -> Ui.GREEN; false -> (if (Ui.grey) 0xFFA35F00.toInt() else Ui.AMBER); null -> Ui.TEXT2 }, true))
             set.addView(r, Ui.lp(t = 3, b = 3))
         }
         if (Build.VERSION.SDK_INT >= 31) item("Nearby devices", "For the Bluetooth link to the watch", granted(Manifest.permission.BLUETOOTH_CONNECT)) { askPermissions() }
@@ -164,13 +182,13 @@ class MainActivity : Activity() {
             open(if (Build.VERSION.SDK_INT >= 22) Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS else "android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
         }
         item("HandyWatch control", "Accessibility: keys, touchpad, typing and opening the camera from the watch", ControlAccess.on()) {
-            AlertDialog.Builder(this).setTitle("HandyWatch control")
+            Ui.dialog(this).setTitle("HandyWatch control")
                 .setMessage("In Accessibility, open Installed apps (or Downloaded services), choose HandyWatch control and switch it on. If Android says it's a restricted setting, open App info › ⋮ › Allow restricted settings first.")
                 .setPositiveButton("Open Accessibility") { _, _ -> open(Settings.ACTION_ACCESSIBILITY_SETTINGS) }
                 .setNeutralButton("App info") { _, _ -> appDetails() }
                 .setNegativeButton("Cancel", null).show()
         }
-        item("Camera", "For the watch's shutter", granted(Manifest.permission.CAMERA)) { askPermissions() }
+        item("Camera and microphone", "For the watch's photos and videos", granted(Manifest.permission.CAMERA) && granted(Manifest.permission.RECORD_AUDIO)) { askPermissions() }
         item("Locking the phone", "Optional: the watch's Lock phone button", Lock.allowed(this)) {
             if (!Lock.allowed(this)) startActivity(Lock.askIntent(this)) else toast("Allowed (Settings › Security › Device admin apps to remove it)")
         }
@@ -180,12 +198,15 @@ class MainActivity : Activity() {
 
         val more = Ui.card(this)
         more.addView(Ui.text(this, "More", 16f, Ui.TEXT, true), Ui.lp(b = 8))
+        more.addView(Ui.segmented(this, listOf("OLED black", "Grey"), if (Ui.grey) 1 else 0, 13f) { i ->
+            Prefs.set(this, "theme", if (i == 1) "grey" else "oled"); main.post { rebuild() }
+        }, Ui.lp(b = 8))
         more.addView(Ui.button(this, "Send a test notification", size = 13.5f) {
             if (!up) toast("The watch isn't connected") else { s?.testNotification(); toast("Sent. Check the watch") }
         }, Ui.lp(b = 6))
         more.addView(Ui.button(this, "Choose apps not to send", size = 13.5f) { excludeApps() }, Ui.lp(b = 6))
         more.addView(Ui.button(this, "Use this device as the watch", size = 13.5f) {
-            AlertDialog.Builder(this).setTitle("Use as the watch?").setMessage("This device will show another phone's notifications instead of sharing its own.")
+            Ui.dialog(this).setTitle("Use as the watch?").setMessage("This device will show another phone's notifications instead of sharing its own.")
                 .setPositiveButton("Switch") { _, _ -> setRole(Prefs.ROLE_WATCH) }.setNegativeButton("Cancel", null).show()
         }, Ui.lp(b = 6))
         more.addView(Ui.button(this, "Exit HandyWatch", Ui.CARD2, Ui.RED, 13.5f) { PhoneService.instance?.exitAll(); finishAffinity() }, Ui.lp())
@@ -214,7 +235,7 @@ class MainActivity : Activity() {
         val pkgs = Prefs.seen(this).sortedBy { label(it).lowercase() }
         if (pkgs.isEmpty()) { toast("Apps appear here once they've shown a notification"); return }
         val ex = Prefs.excluded(this).toMutableSet()
-        AlertDialog.Builder(this).setTitle("Don't send notifications from")
+        Ui.dialog(this).setTitle("Don't send notifications from")
             .setMultiChoiceItems(pkgs.map { label(it) }.toTypedArray(), pkgs.map { ex.contains(it) }.toBooleanArray()) { _, i, on -> if (on) ex.add(pkgs[i]) else ex.remove(pkgs[i]) }
             .setPositiveButton("Save") { _, _ -> Prefs.setExcluded(this, ex) }
             .setNegativeButton("Cancel", null).show()

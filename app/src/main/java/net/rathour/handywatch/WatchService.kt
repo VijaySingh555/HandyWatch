@@ -50,6 +50,12 @@ class WatchService : Service() {
     var notifyAccess = true; private set
     var camOpen = false; private set
     var camCount = 0; private set
+    var camRec = false; private set
+    var camSecs = 0L; private set
+    var camBlank = false; private set
+    var camFront = false; private set
+    var frame: Bitmap? = null; private set
+    @Volatile private var decoding = false
     var ringing = false; private set
     var shot: Bitmap? = null; private set
     var shotAt = 0L; private set
@@ -169,7 +175,13 @@ class WatchService : Service() {
             "n-" -> { val k = o.optString("key"); notifs.remove(k); nm.cancel(nid(k)); changed("notifs") }
             "media" -> { media = o; changed("media") }
             "bat" -> { battery = o.optInt("level", -1); charging = o.optBoolean("charging"); changed("bat") }
-            "cam" -> { camOpen = o.optBoolean("open"); camCount = o.optInt("count"); changed("cam") }
+            "cam" -> {
+                camOpen = o.optBoolean("open"); camCount = o.optInt("count"); camRec = o.optBoolean("rec"); camSecs = o.optLong("secs")
+                camBlank = o.optBoolean("blank"); camFront = o.optBoolean("front")
+                if (!camOpen) frame = null
+                changed("cam")
+            }
+            "frame" -> showFrame(o.optString("jpg"), o.optInt("rot"))
             "shot" -> {
                 val b = runCatching { Base64.decode(o.optString("jpg"), Base64.DEFAULT) }.getOrNull()
                 shot = b?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
@@ -181,6 +193,27 @@ class WatchService : Service() {
             "dials" -> pending.remove(o.optInt("id"))?.invoke(o.optInt("code"), o.optString("body"))
         }
     }
+
+    // ---- the live preview: decode off the main thread, show it, then ask for the next
+    private val decoder = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private fun showFrame(b64: String, rot: Int) {
+        if (decoding) return
+        decoding = true
+        decoder.execute {
+            try {
+                val bytes = Base64.decode(b64, Base64.DEFAULT)
+                var b = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (b != null && rot != 0) {
+                    val m = android.graphics.Matrix().apply { postRotate(rot.toFloat()); if (camFront) postScale(-1f, 1f) }
+                    b = Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+                }
+                main.post { if (b != null) { frame = b; changed("frame") }; decoding = false; if (connected) link.send("{\"cmd\":\"cam\",\"a\":\"ack\"}") }
+            } catch (_: Exception) { decoding = false; main.post { if (connected) link.send("{\"cmd\":\"cam\",\"a\":\"ack\"}") } }
+        }
+    }
+
+    /** The watch's camera page is showing (and the phone's camera is open): ask for frames. */
+    fun live(on: Boolean) { if (connected) link.send(JSONObject().put("cmd", "cam").put("a", "live").put("on", on).toString()) }
 
     // ---- notifications on the watch
     private fun postLocal(n: JSONObject, alert: Boolean) {
