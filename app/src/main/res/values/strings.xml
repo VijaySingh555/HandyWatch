@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">HandyWatch</string>
+    <string name="control_desc">Lets your HandyWatch watch control this phone: arrow keys, Back and Home, the touchpad (a pointer you move from the watch) and typing into the box that has focus. Nothing is read or sent anywhere else.</string>
+</resources>

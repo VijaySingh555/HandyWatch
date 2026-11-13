@@ -1,0 +1,13 @@
+<resources>
+    <style name="Theme.HandyWatch" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF1D1D1B</item>
+        <item name="android:colorPrimary">#FF2B2B29</item>
+        <item name="android:colorPrimaryDark">#FF1D1D1B</item>
+        <item name="android:colorAccent">#FF1E88E5</item>
+        <item name="android:statusBarColor">#FF1D1D1B</item>
+        <item name="android:navigationBarColor">#FF1D1D1B</item>
+    </style>
+    <style name="Theme.HandyWatch.Camera" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
