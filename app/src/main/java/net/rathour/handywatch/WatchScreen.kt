@@ -117,13 +117,15 @@ class WatchScreen(private val a: Activity) {
             what == "notifs" -> paintNotifications()
             what == "media" || what == "ring" -> paintMedia()
             what == "cam" || what == "frame" -> paintCamera()
+            what.startsWith("snap:") -> snapped(what.substring(5))
+            what == "hid" -> { paintKeysLabel(); if (page == 4) paintSettings() }
             what == "shot" -> { shotUntil = System.currentTimeMillis() + 1500; paintCamera(); main.postDelayed({ paintCamera() }, 1600) }
             what == "exit" -> a.finishAffinity()
             else -> { paintAll(); updateLive() }
         }
     }
 
-    private fun paintAll() { paintStatus(); paintNotifications(); paintMedia(); paintCamera(); if (page == 4) paintSettings() }
+    private fun paintAll() { paintStatus(); paintNotifications(); paintMedia(); paintCamera(); paintKeysLabel(); if (page == 4) paintSettings() }
 
     private fun tickClock() {
         clock.text = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date())
@@ -322,14 +324,14 @@ class WatchScreen(private val a: Activity) {
         btns.addView(Ui.iconButton(a, "next", 58, desc = "Next") { svc?.cmd("media", "a" to "next") })
         col.addView(btns, Ui.lp(t = 14))
         val vol = Ui.row(a)
-        vol.addView(Ui.iconButton(a, "voldown", 46, desc = "Volume down") { svc?.cmd("media", "a" to "voldown") })
+        vol.addView(Ui.iconButton(a, "voldown", 46, desc = "Volume down") { svc?.mediaKey("voldown") })
         mVolTrack = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; background = Ui.round(Ui.TRACK, 999f) }
         mVolBar = View(a).apply { background = Ui.round(Ui.TEXT2, 999f) }
         mVolRest = View(a)
         mVolTrack.addView(mVolBar, LinearLayout.LayoutParams(0, -1, 0f))
         mVolTrack.addView(mVolRest, LinearLayout.LayoutParams(0, -1, 1f))
         vol.addView(mVolTrack, Ui.lp(0, Ui.px(8), 1f, 10, 0, 10, 0))
-        vol.addView(Ui.iconButton(a, "volup", 46, desc = "Volume up") { svc?.cmd("media", "a" to "volup") })
+        vol.addView(Ui.iconButton(a, "volup", 46, desc = "Volume up") { svc?.mediaKey("volup") })
         col.addView(vol, Ui.lp(t = 16, l = 4, r = 4))
         mVolText = Ui.text(a, "", 12f, Ui.TEXT2).apply { gravity = Gravity.CENTER }
         col.addView(mVolText, Ui.lp(h = Ui.px(16), t = 2))
@@ -374,6 +376,7 @@ class WatchScreen(private val a: Activity) {
     private lateinit var camBlankBtn: IconView
     private lateinit var camCloseBtn: IconView
     private var shotUntil = 0L
+    private lateinit var camFlash: View
 
     private fun controlPage(): View {
         val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(Ui.px(8), Ui.px(4), Ui.px(8), Ui.px(6)) }
@@ -410,10 +413,12 @@ class WatchScreen(private val a: Activity) {
             setOnClickListener { svc?.let { if (!it.camOpen) it.cmd("cam", "a" to "open") } } }
         camView = ImageView(a).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
         box.addView(camView, FrameLayout.LayoutParams(-1, -1))
+        camFlash = View(a).apply { setBackgroundColor(0xFFFFFFFF.toInt()); alpha = 0f }
         camNote = Ui.text(a, "", 15f, 0xFFEDEDEA.toInt(), true).apply { gravity = Gravity.CENTER; setPadding(Ui.px(12), 0, Ui.px(12), 0) }
         box.addView(camNote, FrameLayout.LayoutParams(-1, -1))
         camBadge = Ui.text(a, "", 13f, 0xFFFFFFFF.toInt(), true).apply { background = Ui.round(Ui.RED, 999f); setPadding(Ui.px(9), Ui.px(3), Ui.px(9), Ui.px(3)); visibility = View.GONE }
         box.addView(camBadge, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = Ui.px(6) })
+        box.addView(camFlash, FrameLayout.LayoutParams(-1, -1))
         col.addView(box, Ui.lp(h = 0, weight = 1f))
         // photo or video, and the timer
         val modes = Ui.row(a)
@@ -430,7 +435,14 @@ class WatchScreen(private val a: Activity) {
         camShutter = Ui.iconButton(a, "camera", 66, Ui.PRIMARY, Ui.ON_PRIMARY, "Shutter") {
             val d = when (Prefs.p(a).getInt("timer", 0)) { 1 -> 5; 2 -> 10; else -> 0 }
             val video = Prefs.p(a).getInt("cam_mode", 0) == 1
-            svc?.let { if (it.camRec) it.cmd("cam", "a" to "shoot", "video" to true) else it.cmd("cam", "a" to "shoot", "delay" to d, "video" to video) }
+            svc?.let {
+                when {
+                    !it.connected -> Toast.makeText(a, "The phone isn't connected", Toast.LENGTH_SHORT).show()
+                    !it.camOpen -> Toast.makeText(a, "Tap the preview to start the camera", Toast.LENGTH_SHORT).show()
+                    it.camRec -> it.cmd("cam", "a" to "shoot", "video" to true)
+                    else -> it.cmd("cam", "a" to "shoot", "delay" to d, "video" to video)
+                }
+            }
         }
         row.addView(camShutter, Ui.lp(Ui.px(66), Ui.px(66), l = 14, r = 14))
         camBlankBtn = Ui.iconButton(a, "blank", 46, desc = "Black out the phone's screen") { svc?.let { it.cmd("cam", "a" to "blank", "on" to !it.camBlank) } }
@@ -450,7 +462,7 @@ class WatchScreen(private val a: Activity) {
         camNote.text = when {
             s?.connected != true -> "Phone not connected"
             s.camCount > 0 -> s.camCount.toString()
-            !s.camOpen -> "Tap to start the phone's camera"
+            !s.camOpen -> "Tap here to start the camera"
             s.frame == null && !showingShot -> "Starting the preview…"
             else -> ""
         }
@@ -464,11 +476,34 @@ class WatchScreen(private val a: Activity) {
         updateLive()
     }
 
+    private lateinit var keysLabel: TextView
+
+    private fun paintKeysLabel() {
+        if (!::keysLabel.isInitialized) return
+        val s = svc
+        keysLabel.text = when {
+            s == null -> ""
+            Prefs.keysMode(a) == "keys" && s.hid.connected -> "Real keys (Bluetooth keyboard)"
+            else -> "Swipes on the phone · Settings › Keys for real keys"
+        }
+    }
+
+    /** The phone has just taken the photo (or started or stopped a video): flash and say so. The watch has already buzzed. */
+    private fun snapped(kind: String) {
+        if (kind == "photo" && ::camFlash.isInitialized) {
+            camFlash.animate().cancel(); camFlash.alpha = 0.9f
+            camFlash.animate().alpha(0f).setDuration(450).start()
+        }
+        Toast.makeText(a, when (kind) { "recstart" -> "Recording"; "recstop" -> "Recording stopped"; else -> "Photo taken" }, Toast.LENGTH_SHORT).show()
+    }
+
     private fun keysTab(): View {
         // a 3 × 3 pad of big keys: volume either side of up, Back bottom-left, Home bottom-right
         val grid = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+        keysLabel = Ui.text(a, "", 11.5f, Ui.TEXT2, lines = 1).apply { gravity = Gravity.CENTER }
+        grid.addView(keysLabel, Ui.lp(b = 5))
         fun key(ic: String, k: String, desc: String, colour: Int = Ui.CARD2, ink: Int = Ui.TEXT) =
-            Ui.iconButton(a, ic, 60, colour, ink, desc, radius = 20f) { svc?.cmd("key", "k" to k) }.apply { pad = 0.3f }
+            Ui.iconButton(a, ic, 60, colour, ink, desc, radius = 20f) { svc?.pressKey(k) }.apply { pad = 0.3f }
         val rows = listOf(
             listOf(key("voldown", "voldown", "Volume down"), key("up", "up", "Up"), key("volup", "volup", "Volume up")),
             listOf(key("left", "left", "Left"), key("playpause", "play", "Play or pause", Ui.PRIMARY, Ui.ON_PRIMARY), key("right", "right", "Right")),
@@ -498,8 +533,8 @@ class WatchScreen(private val a: Activity) {
         col.addView(pad, Ui.lp(h = 0, weight = 1f))
         col.addView(Ui.text(a, "Drag to move · tap to click · hold for a long press · two fingers to scroll", 11.5f, Ui.TEXT2).apply { gravity = Gravity.CENTER }, Ui.lp(t = 5))
         val row = Ui.row(a, Gravity.CENTER)
-        row.addView(Ui.iconButton(a, "back", 44, desc = "Back") { svc?.cmd("key", "k" to "back") }, Ui.lp(Ui.px(44), Ui.px(44), r = 6))
-        row.addView(Ui.iconButton(a, "home", 44, desc = "Home") { svc?.cmd("key", "k" to "home") }, Ui.lp(Ui.px(44), Ui.px(44), r = 6))
+        row.addView(Ui.iconButton(a, "back", 44, desc = "Back") { svc?.pressKey("back") }, Ui.lp(Ui.px(44), Ui.px(44), r = 6))
+        row.addView(Ui.iconButton(a, "home", 44, desc = "Home") { svc?.pressKey("home") }, Ui.lp(Ui.px(44), Ui.px(44), r = 6))
         row.addView(Ui.button(a, "Tap", size = 13f) { svc?.cmd("tap") }, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, r = 4))
         row.addView(Ui.button(a, "Hold", size = 13f) { svc?.cmd("hold") }, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, l = 4))
         col.addView(row, Ui.lp(t = 6))
@@ -519,14 +554,14 @@ class WatchScreen(private val a: Activity) {
         fun sendText() {
             val t = box.text.toString()
             if (t.isEmpty()) return
-            if (svc?.cmd("type", "text" to t) == true) { box.setText(""); Toast.makeText(a, "Sent to the phone", Toast.LENGTH_SHORT).show() }
+            if (svc?.type(t) == true) { box.setText(""); Toast.makeText(a, "Sent to the phone", Toast.LENGTH_SHORT).show() }
         }
         box.setOnEditorActionListener { _, id, _ -> if (id == EditorInfo.IME_ACTION_SEND) { sendText(); true } else false }
         col.addView(box, Ui.lp())
         val row = Ui.row(a, Gravity.CENTER)
         row.addView(Ui.button(a, "Send", Ui.BLUE, 0xFFFFFFFF.toInt(), 14f) { sendText() }, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, r = 6))
-        row.addView(Ui.iconButton(a, "bksp", 46, desc = "Delete the last letter") { svc?.cmd("bksp") }, Ui.lp(Ui.px(46), Ui.px(46), r = 6))
-        row.addView(Ui.iconButton(a, "enter", 46, desc = "Enter") { svc?.cmd("enter") }, Ui.lp(Ui.px(46), Ui.px(46)))
+        row.addView(Ui.iconButton(a, "bksp", 46, desc = "Delete the last letter") { svc?.backspace() }, Ui.lp(Ui.px(46), Ui.px(46), r = 6))
+        row.addView(Ui.iconButton(a, "enter", 46, desc = "Enter") { svc?.enter() }, Ui.lp(Ui.px(46), Ui.px(46)))
         col.addView(row, Ui.lp(t = 8))
         return scroller(col)
     }
@@ -696,6 +731,15 @@ class WatchScreen(private val a: Activity) {
         pr.addView(Ui.button(a, "Reconnect", size = 13f) { svc?.reconnect(); Toast.makeText(a, "Connecting…", Toast.LENGTH_SHORT).show() }, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, r = 4))
         pr.addView(Ui.button(a, "Pair", size = 13f) { open(Settings.ACTION_BLUETOOTH_SETTINGS) }, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, l = 4))
         ph.addView(pr, Ui.lp(t = 8))
+        // keys
+        val ks = section("Keys", "Real keys: the watch acts as a Bluetooth keyboard for the phone (arrows, volume, play/pause, Back, Home and typing). Swipes: through HandyWatch control on the phone.")
+        ks.addView(Ui.segmented(a, listOf("Real keys", "Swipes"), if (Prefs.keysMode(a) == "keys") 0 else 1, 12.5f) { i ->
+            svc?.setKeysMode(if (i == 0) "keys" else "swipes") ?: Prefs.set(a, "keys_mode", if (i == 0) "keys" else "swipes")
+        }, Ui.lp(b = 6))
+        val st = svc?.keysStatus() ?: ""
+        ks.addView(Ui.text(a, st, 13f, if (svc?.hid?.connected == true) Ui.GREEN else Ui.TEXT2), Ui.lp(b = 6))
+        if (Prefs.keysMode(a) == "keys" && svc?.hid?.connected != true && svc?.hid?.state != "unavailable")
+            ks.addView(Ui.button(a, "Connect the keyboard", size = 13f) { svc?.hid?.enable(true); svc?.hid?.connect() }, Ui.lp())
         // mobile data
         val md = section("Mobile data", "On the phone: turn on Bluetooth tethering. Here: Bluetooth › the phone's cog › Internet access.")
         md.addView(Ui.text(a, s?.internet() ?: "", 13f, if (s?.internet()?.contains("phone") == true) Ui.GREEN else Ui.TEXT), Ui.lp(b = 8))

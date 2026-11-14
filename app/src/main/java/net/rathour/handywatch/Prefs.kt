@@ -11,8 +11,8 @@ import android.os.Build
 
 /** Every setting, on this device only. */
 object Prefs {
-    const val VERSION = "0.2"
-    const val BUILD_DATE = "13 November 2026"
+    const val VERSION = "0.3"
+    const val BUILD_DATE = "14 November 2026"
     const val ROLE_NONE = ""
     const val ROLE_PHONE = "phone"
     const val ROLE_WATCH = "watch"
@@ -42,6 +42,8 @@ object Prefs {
     // the watch: touchpad speed (0 slow, 1 normal, 2 fast) and the last page shown
     fun padSpeed(ctx: Context) = p(ctx).getInt("pad_speed", 1)
     fun page(ctx: Context) = p(ctx).getInt("page", 0)
+    /** "keys": the watch is a Bluetooth keyboard (real keys); "swipes": through the phone's Accessibility. */
+    fun keysMode(ctx: Context) = p(ctx).getString("keys_mode", "keys") ?: "keys"
     fun theme(ctx: Context) = p(ctx).getString("theme", "oled") ?: "oled"
 
     fun set(ctx: Context, key: String, v: Any) {

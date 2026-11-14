@@ -1,4 +1,4 @@
-# HandyWatch v0.2
+# HandyWatch v0.3
 
 One app for two Android devices: the **phone** (Vivo X Fold5) and the **watch** (a CD99 Android 9
 watch, about 410 × 502). The watch shows and controls the phone over classic Bluetooth.
@@ -7,15 +7,19 @@ watch, about 410 × 502). The watch shows and controls the phone over classic Bl
   sideways to dismiss it (on the phone too, if chosen); tap one for the full text and time.
   Exclude apps on the phone.
 - **Music:** title, artist and app (long titles scroll); previous, play/pause and next; the
-  phone's music volume; Find phone (the ringtone as an alarm, heard in silent mode, with
+  phone's music volume (tried three ways until the level moves, or real volume keys in keyboard mode); Find phone (the ringtone as an alarm, heard in silent mode, with
   vibration, for up to a minute); Lock phone.
 - **Control:**
-  - **Camera:** a live preview from the phone (small JPEGs over Bluetooth, the next sent once
+  - **Camera:** tap the preview to start the phone's camera; the shutter then takes the photo
+    (the watch buzzes and the preview flashes at the moment it's taken). A live preview from the phone (small JPEGs over Bluetooth, the next sent once
     the last is shown). Photo or video, now or after 5 s / 10 s; a black-screen button lets
     the phone film with its screen dark. Photos go to `Pictures/HandyWatch`, videos to
     `Movies/HandyWatch`.
   - **Keys:** a 3 × 3 pad: volume either side of up; left, play/pause, right; Back, down, Home.
-    The arrows are swipes on the phone, not arrow-key presses.
+    With **Settings › Keys › Real keys** the watch acts as a Bluetooth keyboard for the phone
+    (Android 9+, if the watch's Bluetooth has the keyboard profile): real arrow keys, volume and
+    play/pause keys, Back, Home and typing. Otherwise the arrows are swipes through HandyWatch
+    control (Accessibility).
   - **Pad:** moves a pointer on the phone. Tap clicks, hold long-presses, two fingers scroll.
   - **Type:** text goes into the phone's focused text box. There are Delete and Enter buttons too.
 - **Status dials:** read from `esp_status.php` on rathour.net with the read key. They're fetched

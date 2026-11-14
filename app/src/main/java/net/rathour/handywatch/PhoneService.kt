@@ -226,10 +226,40 @@ class PhoneService : Service() {
                 else if (c.playbackState?.state == PlaybackState.STATE_PLAYING) tc?.pause() else tc?.play()
             "next" -> tc?.skipToNext()
             "prev" -> tc?.skipToPrevious()
-            "volup" -> am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
-            "voldown" -> am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+            "volup" -> volume(true)
+            "voldown" -> volume(false)
         }
         main.postDelayed({ sendMusic() }, 300)
+    }
+
+    /**
+     * One step of volume, tried three ways until the level moves (some phones ignore one way from an
+     * app in the background): the playing app's own volume, Android's music volume, then a volume
+     * key press sent to the music. The watch's volume bar then shows the real level.
+     */
+    private fun volume(up: Boolean) {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val before = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if ((up && before >= max) || (!up && before <= 0)) { lastMusic = ""; sendMusic(); return }
+        val dir = if (up) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+        val moved = { am.getStreamVolume(AudioManager.STREAM_MUSIC) != before }
+        runCatching { controller?.adjustVolume(dir, AudioManager.FLAG_SHOW_UI) }
+        main.postDelayed({
+            if (!moved()) runCatching { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, AudioManager.FLAG_SHOW_UI) }
+            main.postDelayed({
+                if (!moved()) runCatching {
+                    val code = if (up) android.view.KeyEvent.KEYCODE_VOLUME_UP else android.view.KeyEvent.KEYCODE_VOLUME_DOWN
+                    am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code))
+                    am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code))
+                }
+                main.postDelayed({
+                    lastMusic = ""
+                    sendMusic()
+                    if (!moved()) toWatch("The phone didn't change its volume. Try Settings › Keys › Real keys")
+                }, 200)
+            }, 150)
+        }, 150)
     }
 
     fun toWatch(text: String) = send("toast", "text" to text)

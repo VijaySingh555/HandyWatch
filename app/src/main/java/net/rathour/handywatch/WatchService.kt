@@ -87,6 +87,55 @@ class WatchService : Service() {
             }
         }
         link.start()
+        hid = HidKeys(this) { main.post { changed("hid") } }
+        if (Prefs.keysMode(this) == "keys") hid.enable(true)
+    }
+
+    // ---- the watch as a Bluetooth keyboard (real keys), or swipes through the phone's Accessibility
+    lateinit var hid: HidKeys
+    private val realKeys get() = Prefs.keysMode(this) == "keys" && hid.connected
+
+    fun setKeysMode(mode: String) { Prefs.set(this, "keys_mode", mode); hid.enable(mode == "keys"); changed("hid") }
+
+    /** One key from the Keys tab: up, down, left, right, play, back, home, volup, voldown. */
+    fun pressKey(k: String) {
+        if (realKeys) when (k) {
+            "up" -> return hid.key(HidKeys.K_UP)
+            "down" -> return hid.key(HidKeys.K_DOWN)
+            "left" -> return hid.key(HidKeys.K_LEFT)
+            "right" -> return hid.key(HidKeys.K_RIGHT)
+            "play" -> return hid.consumer(HidKeys.PLAY_PAUSE)
+            "back" -> return hid.consumer(HidKeys.AC_BACK)
+            "home" -> return hid.consumer(HidKeys.AC_HOME)
+            "volup" -> return hid.consumer(HidKeys.VOL_UP)
+            "voldown" -> return hid.consumer(HidKeys.VOL_DOWN)
+        }
+        cmd("key", "k" to k)
+    }
+
+    /** Music page buttons: real media and volume keys when the keyboard is connected. */
+    fun mediaKey(a: String) {
+        if (realKeys) when (a) {
+            "volup" -> return hid.consumer(HidKeys.VOL_UP)
+            "voldown" -> return hid.consumer(HidKeys.VOL_DOWN)
+        }
+        cmd("media", "a" to a)
+    }
+
+    /** Typing: as key presses when the keyboard is connected (if every letter has a key), otherwise through Accessibility. */
+    fun type(text: String): Boolean = if (realKeys && hid.type(text)) true else cmd("type", "text" to text)
+    fun backspace() { if (realKeys) hid.key(HidKeys.K_BKSP) else cmd("bksp") }
+    fun enter() { if (realKeys) hid.key(HidKeys.K_ENTER) else cmd("enter") }
+
+    fun keysStatus(): String = when {
+        Prefs.keysMode(this) != "keys" -> "Arrows are swipes (needs HandyWatch control on the phone)"
+        !hid.supported() -> "This watch's Android is too old for keyboard mode: using swipes"
+        hid.state == "unavailable" -> "This watch can't act as a Bluetooth keyboard: using swipes"
+        hid.state == "connected" -> "Keyboard connected to ${hid.hostName}"
+        hid.state == "checking" -> "Checking this watch…"
+        hid.state == "connecting" -> "Connecting the keyboard… If it never connects, unpair and pair the phone again"
+        Prefs.phoneAddr(this).isBlank() -> "Choose your phone first"
+        else -> "Keyboard off (is Bluetooth on?): using swipes"
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -100,6 +149,7 @@ class WatchService : Service() {
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
         link.stop()
+        hid.stop()
         for (k in notifs.keys) nm.cancel(nid(k))
         instance = null
         super.onDestroy()
@@ -140,7 +190,7 @@ class WatchService : Service() {
         return true
     }
 
-    fun reconnect() { link.poke() }
+    fun reconnect() { link.poke(); if (Prefs.keysMode(this) == "keys") hid.enable(true) }
 
     // ---- from the phone
     private fun onLine(line: String) {
@@ -182,6 +232,7 @@ class WatchService : Service() {
                 changed("cam")
             }
             "frame" -> showFrame(o.optString("jpg"), o.optInt("rot"))
+            "snap" -> { buzz(if (o.optString("kind") == "recstop") 2 else 1); changed("snap:" + o.optString("kind")) }
             "shot" -> {
                 val b = runCatching { Base64.decode(o.optString("jpg"), Base64.DEFAULT) }.getOrNull()
                 shot = b?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
@@ -192,6 +243,13 @@ class WatchService : Service() {
             "toast" -> changed("toast:" + o.optString("text"))
             "dials" -> pending.remove(o.optInt("id"))?.invoke(o.optInt("code"), o.optString("body"))
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun buzz(times: Int) {
+        val v = getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+        val pattern = if (times == 2) longArrayOf(0, 90, 120, 90) else longArrayOf(0, 120)
+        if (Build.VERSION.SDK_INT >= 26) v.vibrate(android.os.VibrationEffect.createWaveform(pattern, -1)) else v.vibrate(pattern, -1)
     }
 
     // ---- the live preview: decode off the main thread, show it, then ask for the next

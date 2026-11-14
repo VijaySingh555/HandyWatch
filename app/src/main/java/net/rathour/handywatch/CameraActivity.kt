@@ -366,7 +366,9 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
         busy = true
         try {
             c.parameters = c.parameters.apply { setRotation(jpegRotation()) }
-            c.takePicture({ }, null) { data, camera ->
+            runCatching { c.enableShutterSound(true) }
+            // the shutter moment: the watch buzzes and flashes
+            c.takePicture({ PhoneService.instance?.send("snap", "kind" to "photo") }, null) { data, camera ->
                 busy = false
                 runCatching { camera.startPreview() }
                 runCatching { startFrames(camera) }
@@ -454,6 +456,7 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
             mr.start()
             recorder = mr
             recStart = SystemClock.elapsedRealtime()
+            PhoneService.instance?.send("snap", "kind" to "recstart")
             main.post(recTick)
         } catch (e: Exception) {
             runCatching { mr.release() }
@@ -478,6 +481,7 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
     private fun stopRecording() {
         val mr = recorder ?: return
         recorder = null
+        PhoneService.instance?.send("snap", "kind" to "recstop")
         var ok = true
         try { mr.stop() } catch (_: Exception) { ok = false } // too short: nothing was recorded
         runCatching { mr.release() }
