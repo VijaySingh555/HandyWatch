@@ -362,6 +362,7 @@ class PhoneService : Service() {
             "shoot" -> if (cur != null) cur.shoot(delay, o.optBoolean("video")) else openCamera(true, delay, o.optBoolean("video"))
             "lens" -> cur?.switchLens()
             "blank" -> cur?.setBlank(o.optBoolean("on"))
+            "flash" -> cur?.cycleFlash()
             "live" -> { liveWanted = o.optBoolean("on"); frameBusy = false }
             "ack" -> frameBusy = false
         }

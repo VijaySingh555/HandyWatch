@@ -1,4 +1,4 @@
-# HandyWatch v0.4
+# HandyWatch v0.5
 
 One app for two Android devices: the **phone** (Vivo X Fold5) and the **watch** (a CD99 Android 9
 watch, about 410 × 502). The watch shows and controls the phone over classic Bluetooth.
@@ -11,7 +11,10 @@ watch, about 410 × 502). The watch shows and controls the phone over classic Bl
   vibration, for up to a minute); Lock phone.
 - **Control:**
   - **Camera:** tap the preview to start the phone's camera; the shutter then takes the photo
-    (the watch buzzes and the preview flashes at the moment it's taken). A live preview from the phone (small JPEGs over Bluetooth, the next sent once
+    (the watch buzzes and its screen flashes white with "Photo taken"; the phone blinks). Flash
+    Off/Auto/On on both devices (On lights the torch while filming). The phone's camera screen
+    shows recent photos and videos: tap to open, hold to delete. Selfies are saved mirrored, as
+    the preview shows them (by EXIF, so nothing is re-encoded). A live preview from the phone (small JPEGs over Bluetooth, the next sent once
     the last is shown). Photo or video, now or after 5 s / 10 s; a black-screen button lets
     the phone film with its screen dark. Photos go to `Pictures/HandyWatch`, videos to
     `Movies/HandyWatch`.

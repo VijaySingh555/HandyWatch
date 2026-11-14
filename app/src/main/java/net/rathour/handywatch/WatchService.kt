@@ -54,6 +54,8 @@ class WatchService : Service() {
     var camSecs = 0L; private set
     var camBlank = false; private set
     var camFront = false; private set
+    var camFlash = "off"; private set
+    var camHasFlash = false; private set
     var frame: Bitmap? = null; private set
     @Volatile private var decoding = false
     var ringing = false; private set
@@ -228,6 +230,7 @@ class WatchService : Service() {
             "cam" -> {
                 camOpen = o.optBoolean("open"); camCount = o.optInt("count"); camRec = o.optBoolean("rec"); camSecs = o.optLong("secs")
                 camBlank = o.optBoolean("blank"); camFront = o.optBoolean("front")
+                camFlash = o.optString("flash", "off"); camHasFlash = o.optBoolean("hasFlash")
                 if (!camOpen) frame = null
                 changed("cam")
             }

@@ -265,6 +265,11 @@ class IconView(ctx: Context, var icon: String, var ink: Int = Ui.TEXT) : View(ct
             "stop" -> { fill(); p.color = Ui.RED; rrect(c, 6.5f, 6.5f, 17.5f, 17.5f, 2f) }
             "blank" -> { rrect(c, 7f, 2.5f, 17f, 21.5f, 2.5f); fill(); r.set(9f, 5f, 15f, 17f); c.drawRect(r, p) }
             "unblank" -> { rrect(c, 7f, 2.5f, 17f, 21.5f, 2.5f); line(c, 10.5f, 18.5f, 13.5f, 18.5f); line(c, 9.5f, 9f, 14.5f, 9f); line(c, 9.5f, 12f, 14.5f, 12f) }
+            "flashon", "flashauto", "flashoff" -> {
+                poly(c, true, 13.5f, 2.5f, 5.5f, 13.5f, 11f, 13.5f, 9.5f, 21.5f, 18.5f, 9.5f, 12.5f, 9.5f)
+                if (icon == "flashoff") line(c, 3.5f, 3.5f, 20.5f, 20.5f)
+                if (icon == "flashauto") { p.strokeWidth = 1.6f; poly(c, false, 17f, 22f, 19.5f, 15.5f, 22f, 22f); line(c, 18f, 19.8f, 21f, 19.8f) }
+            }
             "data" -> { line(c, 8f, 20f, 8f, 5f); poly(c, false, 4f, 9f, 8f, 5f, 12f, 9f); line(c, 16f, 4f, 16f, 19f); poly(c, false, 12f, 15f, 16f, 19f, 20f, 15f) }
         }
         stroke()

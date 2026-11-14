@@ -11,8 +11,8 @@ android {
         applicationId = "net.rathour.handywatch"
         minSdk = 21          // Android 5.0; the watch is Android 8, the phone Android 14/15
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.4"
+        versionCode = 5
+        versionName = "0.5"
     }
 
     // signed with the key in the repository's secrets (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD)

@@ -74,7 +74,29 @@ class WatchScreen(private val a: Activity) {
         }
         root.addView(bar, Ui.lp())
         show(Prefs.page(a).coerceIn(0, 4))
-        return root
+        // the whole-screen flash when a photo is taken
+        val frame = FrameLayout(a)
+        frame.addView(root, FrameLayout.LayoutParams(-1, -1))
+        bigFlash = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setBackgroundColor(0xFFFFFFFF.toInt()); alpha = 0f; visibility = View.GONE
+            addView(IconView(a, "camera", 0xFF1D1D1B.toInt()), Ui.lp(Ui.px(84), Ui.px(84)))
+            bigFlashText = Ui.text(a, "Photo taken", 22f, 0xFF1D1D1B.toInt(), true).apply { gravity = Gravity.CENTER }
+            addView(bigFlashText, Ui.lp(t = 6))
+        }
+        frame.addView(bigFlash, FrameLayout.LayoutParams(-1, -1))
+        return frame
+    }
+
+    private lateinit var bigFlash: LinearLayout
+    private lateinit var bigFlashText: TextView
+
+    /** A white screen for a moment, with what happened, then back to the page. */
+    private fun flashScreen(text: String, colour: Int = 0xFFFFFFFF.toInt()) {
+        bigFlash.animate().cancel()
+        bigFlash.setBackgroundColor(colour)
+        bigFlashText.text = text
+        bigFlash.visibility = View.VISIBLE; bigFlash.alpha = 1f
+        bigFlash.animate().alpha(0f).setStartDelay(650).setDuration(350).withEndAction { bigFlash.visibility = View.GONE }.start()
     }
 
     fun show(i: Int) {
@@ -377,6 +399,7 @@ class WatchScreen(private val a: Activity) {
     private lateinit var camCloseBtn: IconView
     private var shotUntil = 0L
     private lateinit var camFlash: View
+    private lateinit var camFlashBtn: IconView
 
     private fun controlPage(): View {
         val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(Ui.px(8), Ui.px(4), Ui.px(8), Ui.px(6)) }
@@ -447,7 +470,8 @@ class WatchScreen(private val a: Activity) {
         row.addView(camShutter, Ui.lp(Ui.px(66), Ui.px(66), l = 14, r = 14))
         camBlankBtn = Ui.iconButton(a, "blank", 46, desc = "Black out the phone's screen") { svc?.let { it.cmd("cam", "a" to "blank", "on" to !it.camBlank) } }
         row.addView(camBlankBtn, Ui.lp(Ui.px(46), Ui.px(46), r = 10))
-        row.addView(View(a), Ui.lp(Ui.px(42), Ui.px(42)))
+        camFlashBtn = Ui.iconButton(a, "flashoff", 42, desc = "Flash: off, auto or on") { svc?.let { if (it.camOpen) it.cmd("cam", "a" to "flash") } }
+        row.addView(camFlashBtn, Ui.lp(Ui.px(42), Ui.px(42)))
         col.addView(row, Ui.lp(t = 6))
         return col
     }
@@ -473,6 +497,10 @@ class WatchScreen(private val a: Activity) {
         camShutter.set(if (s?.camRec == true) "stop" else if (video) "rec" else "camera", Ui.ON_PRIMARY)
         camBlankBtn.set(if (s?.camBlank == true) "unblank" else "blank", Ui.TEXT)
         camCloseBtn.alpha = if (open) 1f else 0.35f
+        val fl = s?.camFlash ?: "off"
+        camFlashBtn.set(when (fl) { "on" -> "flashon"; "auto" -> "flashauto"; else -> "flashoff" }, if (fl == "off") Ui.TEXT else 0xFF1D1D1B.toInt())
+        camFlashBtn.background = Ui.ripple(if (fl == "off") Ui.CARD2 else 0xFFFFD54F.toInt(), 21f)
+        camFlashBtn.alpha = if (open && s?.camHasFlash == true) 1f else 0.35f
         updateLive()
     }
 
@@ -490,11 +518,11 @@ class WatchScreen(private val a: Activity) {
 
     /** The phone has just taken the photo (or started or stopped a video): flash and say so. The watch has already buzzed. */
     private fun snapped(kind: String) {
-        if (kind == "photo" && ::camFlash.isInitialized) {
-            camFlash.animate().cancel(); camFlash.alpha = 0.9f
-            camFlash.animate().alpha(0f).setDuration(450).start()
+        when (kind) {
+            "recstart" -> flashScreen("Recording", 0xFFFFCDD2.toInt())
+            "recstop" -> flashScreen("Recording stopped", 0xFFE0E0E0.toInt())
+            else -> flashScreen("Photo taken")
         }
-        Toast.makeText(a, when (kind) { "recstart" -> "Recording"; "recstop" -> "Recording stopped"; else -> "Photo taken" }, Toast.LENGTH_SHORT).show()
     }
 
     private fun keysTab(): View {

@@ -58,6 +58,12 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
     private lateinit var countText: TextView
     private lateinit var recText: TextView
     private lateinit var blackout: View
+    private lateinit var flashBtn: TextView
+    private lateinit var stripRow: android.widget.LinearLayout
+    private lateinit var blink: View
+    private var shots = mutableListOf<Shots.Shot>()
+    private val thumbs = Executors.newSingleThreadExecutor()
+    private var hasFlash = false
     private val main = Handler(Looper.getMainLooper())
     private val jpegWork = Executors.newSingleThreadExecutor()
     private var cam: Camera? = null
@@ -118,10 +124,26 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
         }
         roundBtn("⟲", Gravity.BOTTOM or Gravity.END, "Switch camera") { switchLens() }
         roundBtn("✕", Gravity.TOP or Gravity.START, "Close") { finish() }
+        flashBtn = TextView(this).apply {
+            textSize = 15f; setTextColor(0xFFFFFFFF.toInt()); gravity = Gravity.CENTER; contentDescription = "Flash"
+            setPadding((14 * d).toInt(), 0, (14 * d).toInt(), 0)
+            background = GradientDrawable().apply { setColor(0xB3242424.toInt()); cornerRadius = 26 * d }
+            setOnClickListener { cycleFlash() }
+        }
+        root.addView(flashBtn, FrameLayout.LayoutParams(-2, (52 * d).toInt(), Gravity.TOP or Gravity.END).apply { topMargin = (28 * d).toInt(); rightMargin = (28 * d).toInt() })
+        // recent photos and videos: tap to open in the gallery, hold to delete (as in HandyLink)
+        val strip = android.widget.HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        stripRow = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.HORIZONTAL; setPadding((16 * d).toInt(), 0, (16 * d).toInt(), 0) }
+        strip.addView(stripRow)
+        root.addView(strip, FrameLayout.LayoutParams(-1, (56 * d).toInt(), Gravity.BOTTOM).apply { bottomMargin = (128 * d).toInt() })
+        // a white blink on the phone at the moment of the photo
+        blink = View(this).apply { setBackgroundColor(0xFFFFFFFF.toInt()); alpha = 0f; isClickable = false }
+        root.addView(blink, FrameLayout.LayoutParams(-1, -1))
         // the black screen: covers everything at the lowest brightness; the camera keeps running. Tap to come back.
         blackout = View(this).apply { setBackgroundColor(0xFF000000.toInt()); visibility = View.GONE; setOnClickListener { setBlank(false) } }
         root.addView(blackout, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
+        shots = Shots.load(this); renderStrip()
         handleShootExtra(intent)
     }
 
@@ -166,6 +188,7 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
         PhoneService.instance?.cameraState(JSONObject().put("open", false))
         runCatching { tone?.release() }
         jpegWork.shutdownNow()
+        thumbs.shutdownNow()
         super.onDestroy()
     }
 
@@ -173,7 +196,7 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
     fun sendState() {
         val s = PhoneService.instance ?: return
         s.cameraState(JSONObject().put("open", true).put("front", front).put("count", counting).put("countVideo", countVideo)
-            .put("rec", recorder != null).put("secs", if (recorder != null) (SystemClock.elapsedRealtime() - recStart) / 1000 else 0).put("blank", blank))
+            .put("flash", flashMode()).put("hasFlash", hasFlash).put("rec", recorder != null).put("secs", if (recorder != null) (SystemClock.elapsedRealtime() - recStart) / 1000 else 0).put("blank", blank))
     }
 
     // ---- TextureView
@@ -204,6 +227,8 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
             if (p.supportedFocusModes?.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE) == true)
                 p.focusMode = Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE
             p.setRotation(jpegRotation())
+            hasFlash = p.supportedFlashModes?.contains(Camera.Parameters.FLASH_MODE_ON) == true
+            if (hasFlash) p.flashMode = flashParam(false)
             c.parameters = p
             c.setDisplayOrientation(displayRotation())
             c.setPreviewTexture(st)
@@ -212,6 +237,7 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
             startFrames(c)
             c.startPreview()
             cam = c
+            paintFlash()
             fit()
             firePending(900)
         } catch (e: Exception) {
@@ -372,17 +398,18 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
         if (busy) return
         busy = true
         try {
-            runCatching { c.parameters = c.parameters.apply { setRotation(jpegRotation()) } }
+            runCatching { c.parameters = c.parameters.apply { setRotation(jpegRotation()); if (hasFlash) flashMode = flashParam(false) } }
+            val mirror = front
             runCatching { c.enableShutterSound(true) }
             main.postDelayed(captureTimeout, 5000)
             // the shutter moment: the watch buzzes and flashes
-            c.takePicture({ PhoneService.instance?.send("snap", "kind" to "photo") }, null) { data, camera ->
+            c.takePicture({ PhoneService.instance?.send("snap", "kind" to "photo"); blinkNow() }, null) { data, camera ->
                 main.removeCallbacks(captureTimeout)
                 busy = false
                 runCatching { camera.startPreview() }
                 runCatching { startFrames(camera) }
                 if (data == null || data.isEmpty()) grabPreview("the camera returned an empty photo")
-                else Thread { save(data) }.start()
+                else Thread { save(data, mirror) }.start()
             }
         } catch (e: Exception) {
             main.removeCallbacks(captureTimeout)
@@ -415,12 +442,12 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
                 var jpg = out.toByteArray()
                 if (rot != 0 || front) {
                     val b = BitmapFactory.decodeByteArray(jpg, 0, jpg.size)
-                    val m = Matrix().apply { postRotate(rot.toFloat()) }
+                    val m = Matrix().apply { postRotate(rot.toFloat()); if (front) postScale(-1f, 1f) }
                     val r = android.graphics.Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
                     val o2 = ByteArrayOutputStream(); r.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, o2); jpg = o2.toByteArray()
                 }
-                main.post { PhoneService.instance?.send("snap", "kind" to "photo"); PhoneService.instance?.toWatch("Saved from the preview ($grabReason)") }
-                save(jpg)
+                main.post { PhoneService.instance?.send("snap", "kind" to "photo"); blinkNow(); PhoneService.instance?.toWatch("Saved from the preview ($grabReason)") }
+                save(jpg, false, front)
             } catch (e: Exception) { main.post { PhoneService.instance?.toWatch("The photo failed: $grabReason") } }
         }.start()
     }
@@ -429,9 +456,15 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
 
     private fun stamp() = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.UK).format(Date())
 
-    private fun save(jpg: ByteArray) {
+    /**
+     * Saves a photo in Pictures/HandyWatch. Selfies are saved the way the preview showed them
+     * (mirrored), by marking the photo as flipped rather than re-encoding it, so nothing is lost.
+     */
+    private fun save(original: ByteArray, mirror: Boolean, thumbMirror: Boolean = mirror) {
         val name = "HandyWatch_" + stamp() + ".jpg"
         var ok = false
+        var saved: Uri? = null
+        val jpg = if (mirror) runCatching { mirrorExif(original) }.getOrDefault(original) else original
         try {
             if (Build.VERSION.SDK_INT >= 29) {
                 val v = ContentValues().apply {
@@ -440,22 +473,135 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
                     put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HandyWatch")
                 }
                 val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v)
-                if (uri != null) contentResolver.openOutputStream(uri)?.use { it.write(jpg); ok = true }
+                if (uri != null) contentResolver.openOutputStream(uri)?.use { it.write(jpg); ok = true; saved = uri }
             } else {
                 val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "HandyWatch")
                 dir.mkdirs()
                 val f = File(dir, name)
                 f.writeBytes(jpg); ok = true
-                MediaScannerConnection.scanFile(this, arrayOf(f.absolutePath), arrayOf("image/jpeg"), null)
+                MediaScannerConnection.scanFile(this, arrayOf(f.absolutePath), arrayOf("image/jpeg")) { _, uri -> if (uri != null) main.post { addShot(uri, false) } }
             }
         } catch (e: Exception) { saveError = e.message ?: e.javaClass.simpleName }
-        val thumb = runCatching { thumbnail(jpg) }.getOrNull()
+        val thumb = runCatching { thumbnail(original, thumbMirror) }.getOrNull()
         main.post {
+            saved?.let { addShot(it, false) }
             val s = PhoneService.instance ?: return@post
             if (!ok) s.toWatch("The photo couldn't be saved on the phone: $saveError")
             else if (thumb != null) s.sendShot(thumb) else s.toWatch("Photo saved")
         }
     }
+
+    /** The same photo, marked as mirrored left to right (EXIF orientation: 1→2, 6→5, 3→4, 8→7). */
+    private fun mirrorExif(jpg: ByteArray): ByteArray {
+        val f = File(cacheDir, "mirror.jpg")
+        f.writeBytes(jpg)
+        val ex = android.media.ExifInterface(f.absolutePath)
+        val o = ex.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)
+        val flipped = when (o) { 6 -> 5; 3 -> 4; 8 -> 7; 2 -> 1; 5 -> 6; 4 -> 3; 7 -> 8; else -> 2 }
+        ex.setAttribute(android.media.ExifInterface.TAG_ORIENTATION, flipped.toString())
+        ex.saveAttributes()
+        val out = f.readBytes()
+        f.delete()
+        return out
+    }
+
+    // ---- the white blink (not while the screen is blacked out)
+    private fun blinkNow() {
+        if (blank) return
+        blink.animate().cancel(); blink.alpha = 0.85f
+        blink.animate().alpha(0f).setDuration(220).start()
+    }
+
+    // ---- flash: Off, Auto, On (in video, On lights the torch while recording)
+    private fun flashMode() = Prefs.p(this).getString("flash", "off") ?: "off"
+
+    private fun flashParam(recording: Boolean): String = when (flashMode()) {
+        "on" -> if (recording) Camera.Parameters.FLASH_MODE_TORCH else Camera.Parameters.FLASH_MODE_ON
+        "auto" -> if (recording) Camera.Parameters.FLASH_MODE_OFF else Camera.Parameters.FLASH_MODE_AUTO
+        else -> Camera.Parameters.FLASH_MODE_OFF
+    }
+
+    fun cycleFlash() { setFlash(when (flashMode()) { "off" -> "auto"; "auto" -> "on"; else -> "off" }) }
+
+    fun setFlash(mode: String) {
+        Prefs.set(this, "flash", mode)
+        val c = cam
+        if (c != null && hasFlash && recorder == null) runCatching { c.parameters = c.parameters.apply { flashMode = flashParam(false) } }
+        paintFlash()
+        sendState()
+    }
+
+    private fun paintFlash() {
+        flashBtn.visibility = if (hasFlash) View.VISIBLE else View.GONE
+        flashBtn.text = when (flashMode()) { "on" -> "⚡ On"; "auto" -> "⚡ Auto"; else -> "⚡ Off" }
+        (flashBtn.background as? GradientDrawable)?.setColor(if (flashMode() == "off") 0xB3242424.toInt() else 0xFFFFD54F.toInt())
+        flashBtn.setTextColor(if (flashMode() == "off") 0xFFFFFFFF.toInt() else 0xFF1D1D1B.toInt())
+    }
+
+    // ---- the recent strip
+    private fun addShot(uri: Uri, video: Boolean) { Shots.add(this, uri, video); shots = Shots.load(this); renderStrip() }
+
+    private fun renderStrip() {
+        stripRow.removeAllViews()
+        val d = resources.displayMetrics.density
+        for (shot in shots.toList()) {
+            val iv = android.widget.ImageView(this).apply {
+                layoutParams = android.widget.LinearLayout.LayoutParams((56 * d).toInt(), (56 * d).toInt()).apply { rightMargin = (8 * d).toInt() }
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                setBackgroundColor(0xFF333333.toInt())
+                contentDescription = if (shot.video) "Video" else "Photo"
+                setOnClickListener { openShot(shot) }
+                setOnLongClickListener { confirmDelete(shot); true }
+            }
+            stripRow.addView(iv)
+            thumbs.execute {
+                val b = shotThumb(shot)
+                main.post { if (b != null) iv.setImageBitmap(b) else { shots.remove(shot); Shots.save(this, shots); stripRow.removeView(iv) } }
+            }
+        }
+    }
+
+    private fun shotThumb(shot: Shots.Shot): android.graphics.Bitmap? = try {
+        if (Build.VERSION.SDK_INT >= 29) contentResolver.loadThumbnail(shot.uri, android.util.Size(160, 160), null)
+        else if (shot.video) android.media.MediaMetadataRetriever().run { setDataSource(this@CameraActivity, shot.uri); val f = frameAtTime; release(); f }
+        else contentResolver.openInputStream(shot.uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = 16 }) }
+    } catch (e: Exception) { null }
+
+    private fun openShot(shot: Shots.Shot) {
+        try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW).setDataAndType(shot.uri, if (shot.video) "video/*" else "image/*").addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
+        catch (e: Exception) { android.widget.Toast.makeText(this, "No app to open it", android.widget.Toast.LENGTH_SHORT).show() }
+    }
+
+    private var pendingDelete: Shots.Shot? = null
+    private fun confirmDelete(shot: Shots.Shot) {
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert).setTitle(if (shot.video) "Delete this video?" else "Delete this photo?")
+            .setMessage("It's removed from your phone's gallery.")
+            .setPositiveButton("Delete") { _, _ -> deleteShot(shot) }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun deleteShot(shot: Shots.Shot) {
+        try { contentResolver.delete(shot.uri, null, null); removedShot(shot) }
+        catch (e: SecurityException) {
+            pendingDelete = shot
+            try {
+                val sender = when {
+                    Build.VERSION.SDK_INT >= 30 -> MediaStore.createDeleteRequest(contentResolver, listOf(shot.uri)).intentSender
+                    Build.VERSION.SDK_INT == 29 && e is android.app.RecoverableSecurityException -> e.userAction.actionIntent.intentSender
+                    else -> null
+                }
+                if (sender != null) { @Suppress("DEPRECATION") startIntentSenderForResult(sender, 2, null, 0, 0, 0) }
+            } catch (_: Exception) { }
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 2 && resultCode == RESULT_OK) pendingDelete?.let { removedShot(it) }
+        pendingDelete = null
+    }
+
+    private fun removedShot(shot: Shots.Shot) { shots.remove(shot); Shots.save(this, shots); renderStrip() }
 
     // ---- video (Movies/HandyWatch); sound too if the microphone is allowed
     private fun startRecording() {
@@ -470,6 +616,7 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
                 CamcorderProfile.hasProfile(camId, CamcorderProfile.QUALITY_1080P) -> CamcorderProfile.get(camId, CamcorderProfile.QUALITY_1080P)
                 else -> CamcorderProfile.get(camId, CamcorderProfile.QUALITY_HIGH)
             }
+            if (hasFlash && flashMode() == "on") runCatching { c.parameters = c.parameters.apply { flashMode = Camera.Parameters.FLASH_MODE_TORCH } }
             c.unlock()
             mr.setCamera(c)
             if (sound) mr.setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
@@ -538,10 +685,11 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
         recPfd = null
         val uri = recUri
         if (uri != null) {
-            if (ok) runCatching { contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null) }
+            if (ok) { runCatching { contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null) }; addShot(uri, true) }
             else runCatching { contentResolver.delete(uri, null, null) }
         }
-        recFile?.let { f -> if (ok) MediaScannerConnection.scanFile(this, arrayOf(f.absolutePath), arrayOf("video/mp4"), null) else f.delete() }
+        recFile?.let { f -> if (ok) MediaScannerConnection.scanFile(this, arrayOf(f.absolutePath), arrayOf("video/mp4")) { _, u -> if (u != null) main.post { addShot(u, true) } } else f.delete() }
+        if (hasFlash) runCatching { cam?.let { it.parameters = it.parameters.apply { flashMode = flashParam(false) } } }
         recUri = null; recFile = null
         recText.visibility = View.GONE
         PhoneService.instance?.toWatch(if (ok) "Video saved" else "The video was too short to keep")
@@ -568,17 +716,35 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
     }
 
     /** A small copy for the watch (about 10 KB). */
-    private fun thumbnail(jpg: ByteArray): String? {
+    private fun thumbnail(jpg: ByteArray, mirror: Boolean): String? {
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(jpg, 0, jpg.size, o)
         var sample = 1
         while (maxOf(o.outWidth, o.outHeight) / (sample * 2) >= 320) sample *= 2
         val b = BitmapFactory.decodeByteArray(jpg, 0, jpg.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
         val scale = 320f / maxOf(b.width, b.height)
-        val m = Matrix().apply { postScale(scale, scale); postRotate(exifDegrees(jpg).toFloat()) }
+        val m = Matrix().apply { postScale(scale, scale); postRotate(exifDegrees(jpg).toFloat()); if (mirror) postScale(-1f, 1f) }
         val small = android.graphics.Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
         val out = ByteArrayOutputStream()
         small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, out)
         return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
+}
+
+/** The recent shots shown along the bottom of the camera screen (the files are in the phone's gallery). */
+object Shots {
+    data class Shot(val uri: Uri, val video: Boolean)
+
+    fun load(ctx: android.content.Context): MutableList<Shot> {
+        val saved = Prefs.p(ctx).getString("shots", "") ?: ""
+        return saved.split("\n").filter { it.isNotBlank() }.mapNotNull { line ->
+            val p = line.split("|"); if (p.size == 2) Shot(Uri.parse(p[0]), p[1] == "v") else null
+        }.toMutableList()
+    }
+
+    fun save(ctx: android.content.Context, shots: List<Shot>) {
+        Prefs.p(ctx).edit().putString("shots", shots.take(30).joinToString("\n") { it.uri.toString() + "|" + if (it.video) "v" else "p" }).apply()
+    }
+
+    fun add(ctx: android.content.Context, uri: Uri, video: Boolean) { val l = load(ctx); l.add(0, Shot(uri, video)); save(ctx, l) }
 }
