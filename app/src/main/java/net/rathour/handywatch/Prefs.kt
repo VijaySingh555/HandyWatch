@@ -11,7 +11,7 @@ import android.os.Build
 
 /** Every setting, on this device only. */
 object Prefs {
-    const val VERSION = "0.3"
+    const val VERSION = "0.4"
     const val BUILD_DATE = "14 November 2026"
     const val ROLE_NONE = ""
     const val ROLE_PHONE = "phone"

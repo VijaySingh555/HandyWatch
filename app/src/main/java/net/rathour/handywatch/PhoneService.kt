@@ -383,14 +383,31 @@ class PhoneService : Service() {
         send("frame", "jpg" to b64, "rot" to rot)
     }
 
+    /** Can Android let HandyWatch open its camera screen from the background? (HandyWatch control, or "Display over other apps".) */
+    fun canOpenScreens() = ControlAccess.instance != null || Build.VERSION.SDK_INT < 29 ||
+        (Build.VERSION.SDK_INT >= 23 && Settings.canDrawOverlays(this))
+
     private fun openCamera(shoot: Boolean, delay: Int, video: Boolean) {
         val i = Intent(this, CameraActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .putExtra("shoot", shoot).putExtra("delay", delay).putExtra("video", video)
-        // Android only lets an app open a screen from the background while its accessibility service is on
         val from: Context = ControlAccess.instance ?: this
         try { from.startActivity(i) } catch (_: Exception) { }
-        if (ControlAccess.instance == null) main.postDelayed({
-            if (CameraActivity.current == null) toWatch("Open HandyWatch on the phone, or turn on HandyWatch control, to use the camera")
+        main.postDelayed({
+            if (CameraActivity.current != null) return@postDelayed
+            // Android blocked it: offer a notification to tap instead, and say why
+            Sys.channel(this, "handywatch_camera", "Camera from the watch", NotificationManager.IMPORTANCE_HIGH)
+            @Suppress("DEPRECATION")
+            val n = Sys.builder(this, "handywatch_camera")
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setContentTitle("Tap to open the camera")
+                .setContentText("Your watch asked for the camera. Turn on HandyWatch control to skip this step.")
+                .setContentIntent(PendingIntent.getActivity(this, 7, i, Sys.PI_FLAGS))
+                .setAutoCancel(true)
+                .setPriority(android.app.Notification.PRIORITY_HIGH)
+                .build()
+            runCatching { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(7, n) }
+            toWatch(if (canOpenScreens()) "The phone's camera screen didn't open. Tap the notification on the phone"
+                else "Android blocked the camera screen. Tap the notification on the phone, or turn on HandyWatch control")
         }, 2500)
     }
 

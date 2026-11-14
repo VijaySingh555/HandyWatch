@@ -1,4 +1,4 @@
-# HandyWatch v0.3
+# HandyWatch v0.4
 
 One app for two Android devices: the **phone** (Vivo X Fold5) and the **watch** (a CD99 Android 9
 watch, about 410 × 502). The watch shows and controls the phone over classic Bluetooth.

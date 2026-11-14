@@ -188,6 +188,10 @@ class MainActivity : Activity() {
                 .setNeutralButton("App info") { _, _ -> appDetails() }
                 .setNegativeButton("Cancel", null).show()
         }
+        if (Build.VERSION.SDK_INT >= 29 && !ControlAccess.on())
+            item("Display over other apps", "Needed to open the camera from the watch if HandyWatch control is off", Settings.canDrawOverlays(this)) {
+                try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) } catch (_: Exception) { appDetails() }
+            }
         item("Camera and microphone", "For the watch's photos and videos", granted(Manifest.permission.CAMERA) && granted(Manifest.permission.RECORD_AUDIO)) { askPermissions() }
         item("Locking the phone", "Optional: the watch's Lock phone button", Lock.allowed(this)) {
             if (!Lock.allowed(this)) startActivity(Lock.askIntent(this)) else toast("Allowed (Settings › Security › Device admin apps to remove it)")

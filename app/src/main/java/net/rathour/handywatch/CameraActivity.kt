@@ -216,7 +216,7 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
             firePending(900)
         } catch (e: Exception) {
             closeCamera()
-            PhoneService.instance?.toWatch("The phone's camera couldn't start")
+            PhoneService.instance?.toWatch("The phone's camera couldn't start: " + (e.message ?: e.javaClass.simpleName))
         }
     }
 
@@ -238,6 +238,7 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
         val size = previewW * previewH * ImageFormat.getBitsPerPixel(ImageFormat.NV21) / 8
         repeat(2) { c.addCallbackBuffer(ByteArray(size)) }
         c.setPreviewCallbackWithBuffer { data, camera ->
+            if (data != null && grabWanted) grabFrame(data, previewW, previewH)
             val s = PhoneService.instance
             if (data != null && s != null && !encoding && s.wantsFrame()) {
                 encoding = true
@@ -360,25 +361,71 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
 
     private fun fire() { if (countVideo) startRecording() else capture(); sendState() }
 
+    private val captureTimeout = Runnable {
+        // the camera never returned the photo: take it from the preview instead
+        if (busy) { busy = false; runCatching { cam?.startPreview() }; grabPreview("the camera didn't finish the photo") }
+    }
+
     private fun capture() {
-        val c = cam ?: return
+        val c = cam
+        if (c == null) { PhoneService.instance?.toWatch("The phone's camera isn't open"); return }
         if (busy) return
         busy = true
         try {
-            c.parameters = c.parameters.apply { setRotation(jpegRotation()) }
+            runCatching { c.parameters = c.parameters.apply { setRotation(jpegRotation()) } }
             runCatching { c.enableShutterSound(true) }
+            main.postDelayed(captureTimeout, 5000)
             // the shutter moment: the watch buzzes and flashes
             c.takePicture({ PhoneService.instance?.send("snap", "kind" to "photo") }, null) { data, camera ->
+                main.removeCallbacks(captureTimeout)
                 busy = false
                 runCatching { camera.startPreview() }
                 runCatching { startFrames(camera) }
-                Thread { save(data) }.start()
+                if (data == null || data.isEmpty()) grabPreview("the camera returned an empty photo")
+                else Thread { save(data) }.start()
             }
         } catch (e: Exception) {
+            main.removeCallbacks(captureTimeout)
             busy = false
-            PhoneService.instance?.toWatch("The photo couldn't be taken")
+            runCatching { c.startPreview(); startFrames(c) }
+            grabPreview(e.message ?: e.javaClass.simpleName)
         }
     }
+
+    // ---- fallback: a full-size still from the live preview (lower quality than a real photo, but never lost)
+    @Volatile private var grabWanted = false
+    private var grabReason = ""
+
+    private fun grabPreview(reason: String) {
+        grabReason = reason
+        grabWanted = true
+        main.postDelayed({ if (grabWanted) { grabWanted = false; PhoneService.instance?.toWatch("The photo failed: $reason") } }, 3000)
+    }
+
+    /** Called from the preview callback with a whole frame when a fallback still is wanted. */
+    private fun grabFrame(nv21: ByteArray, w: Int, h: Int) {
+        grabWanted = false
+        val copy = nv21.copyOf()
+        val rot = jpegRotation()
+        val front = this.front
+        Thread {
+            try {
+                val out = ByteArrayOutputStream()
+                YuvImage(copy, ImageFormat.NV21, w, h, null).compressToJpeg(Rect(0, 0, w, h), 92, out)
+                var jpg = out.toByteArray()
+                if (rot != 0 || front) {
+                    val b = BitmapFactory.decodeByteArray(jpg, 0, jpg.size)
+                    val m = Matrix().apply { postRotate(rot.toFloat()) }
+                    val r = android.graphics.Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+                    val o2 = ByteArrayOutputStream(); r.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, o2); jpg = o2.toByteArray()
+                }
+                main.post { PhoneService.instance?.send("snap", "kind" to "photo"); PhoneService.instance?.toWatch("Saved from the preview ($grabReason)") }
+                save(jpg)
+            } catch (e: Exception) { main.post { PhoneService.instance?.toWatch("The photo failed: $grabReason") } }
+        }.start()
+    }
+
+    @Volatile private var saveError = ""
 
     private fun stamp() = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.UK).format(Date())
 
@@ -401,11 +448,11 @@ class CameraActivity : Activity(), TextureView.SurfaceTextureListener {
                 f.writeBytes(jpg); ok = true
                 MediaScannerConnection.scanFile(this, arrayOf(f.absolutePath), arrayOf("image/jpeg"), null)
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) { saveError = e.message ?: e.javaClass.simpleName }
         val thumb = runCatching { thumbnail(jpg) }.getOrNull()
         main.post {
             val s = PhoneService.instance ?: return@post
-            if (!ok) s.toWatch("The photo couldn't be saved on the phone")
+            if (!ok) s.toWatch("The photo couldn't be saved on the phone: $saveError")
             else if (thumb != null) s.sendShot(thumb) else s.toWatch("Photo saved")
         }
     }
